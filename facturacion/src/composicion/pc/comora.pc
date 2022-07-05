@@ -1,0 +1,394 @@
+/****************************************************************************/
+/*  Funcion     : comora.pc                                                 */
+/*  Descripcion : Funciones Oracle para el lanzamiento del proceso de compo-*/
+/*                sicion.                                                   */
+/*  Fecha       : 22-02-97                                                  */
+/*  Autor       : Javier Garcia Paredes                                     */
+/****************************************************************************/
+#define _COMORA_PC_
+
+#include <comora.h>
+
+EXEC SQL INCLUDE sqlca;
+
+/* 20040712 CH-200404071805 numstr_buf  Se crea fnc que convierte un long a string*/
+
+char numstr_buf[15];
+char *numstr(int num)
+{
+        sprintf(numstr_buf,"%d",num);
+        return(numstr_buf);
+}
+
+/****************************************************************************/
+/*                        funcion : bfnDBCargaPresupuesto                   */
+/* -Funcion que carga los Cargos de un Cliente de la Tabla Fa_Presupuesto   */
+/*  La carga se hace en la estructura Global stPreFactura                   */
+/****************************************************************************/
+BOOL bfnDBCargaPresupuesto (long lNumProceso,
+                            long lCodCliente)
+{
+
+  	static   int  i = 0  ;
+  	static   int  x = 0  ;
+	  CONCEPTO stConcepto  ;
+  	int   			iFetchedRows = MAXPRESU;
+	  int   			iRetrievRows = MAXPRESU;
+    short 			iLastRows    = 0;	
+
+  EXEC SQL BEGIN DECLARE SECTION;
+	  static long   lhNumProceso;
+	  static char   szFormatoFec1     [17];
+	  static long   lhCodCliente      [MAXPRESU];
+	  static int    ihCodConcepto     [MAXPRESU];
+	  static long   lhColumna         [MAXPRESU];
+	  static char   szhCodMoneda      [MAXPRESU][4];
+	  static int    ihCodProducto     [MAXPRESU];
+	  static int    ihCodTipConce     [MAXPRESU];
+	  static char   szhFecValor       [MAXPRESU][15];
+	  static char   szhFecEfectividad [MAXPRESU][15];
+	  static double dhImpConcepto     [MAXPRESU]  ;
+	  static char   szhCodRegion      [MAXPRESU][4];
+	  static char   szhCodProvincia   [MAXPRESU][6];
+	  static char   szhCodCiudad      [MAXPRESU][6];
+	  static double dhImpMontoBase    [MAXPRESU];
+	  static short  shIndFactur       [MAXPRESU];
+	  static double dhImpFacturable   [MAXPRESU];
+	  static char   szhCodModulo      [MAXPRESU][3];
+	  static long   lhCodPlanCom      [MAXPRESU];
+	  static int    ihCodCatImpos     [MAXPRESU];
+	  static short  shIndEstado       [MAXPRESU];
+	  static short  shIndSuperTel     [MAXPRESU];
+	  static long   lhNumAbonado      [MAXPRESU];
+	  static int    ihCodPortador     [MAXPRESU];
+	  static char   szhDesConcepto    [MAXPRESU][61];
+	  static long   lhCodCiclFact     [MAXPRESU];
+	  static char   szhNumTerminal    [MAXPRESU][16];
+	  static long   lhCapCode         [MAXPRESU];
+	  static int    ihNumCuotas       [MAXPRESU];
+	  static int    ihOrdCuota        [MAXPRESU];
+	  static int    ihNumUnidades     [MAXPRESU];
+	  static char   szhNumSerieMec    [MAXPRESU][26];
+	  static char   szhNumSerieLe     [MAXPRESU][26];
+	  static float  fhPrcImpuesto     [MAXPRESU];
+	  static double dhValDto          [MAXPRESU];
+	  static int    shTipDto          [MAXPRESU];
+	  static int    ihMesGarantia     [MAXPRESU];
+	  static char   szhNumGuia        [MAXPRESU][11];
+	  static long   lhNumVenta        [MAXPRESU];
+	  static long   lhNumTransaccion  [MAXPRESU];
+	  static short  shIndAlta         [MAXPRESU];
+	  static int    ihNumPaquete      [MAXPRESU];
+	  static short  shFlagImpues      [MAXPRESU];
+	  static short  shFlagDto         [MAXPRESU];
+	  static int    ihCodConceRel     [MAXPRESU];
+	  static long   lhColumnaRel      [MAXPRESU];
+	  static short  shIndCuota        [MAXPRESU];
+  	  static char   szhCodTecnologia  [MAXPRESU][8];
+	  static short  i_shIndCuota      [MAXPRESU];
+	  static short  i_shNumCuotas     [MAXPRESU];
+	  static short  i_shOrdCuota      [MAXPRESU];
+	  static short  i_shNumUnidades   [MAXPRESU];
+	  static short  i_shNumSerieMec   [MAXPRESU];
+	  static short  i_shNumSerieLe    [MAXPRESU];
+	  static short  i_shPrcImpuesto   [MAXPRESU];
+	  static short  i_shValDto        [MAXPRESU];
+	  static short  i_shTipDto        [MAXPRESU];
+	  static short  i_shMesGarantia   [MAXPRESU];
+	  static short  i_shNumGuia       [MAXPRESU];
+	  static short  i_shIndAlta       [MAXPRESU];
+	  static short  i_shNumPaquete    [MAXPRESU];
+	  static short  i_shFlagImpues    [MAXPRESU];
+	  static short  i_shFlagDto       [MAXPRESU];
+	  static short  i_shCodConceRel   [MAXPRESU];
+	  static short  i_shColumnaRel    [MAXPRESU];
+	  static short  i_shSeqCuotas     [MAXPRESU];
+	  static short  i_shIndEstado     [MAXPRESU];
+	  static short  i_shCodTipConce   [MAXPRESU];
+	  static short  i_shCodModulo     [MAXPRESU];
+	  static short  i_shCodCiclFact   [MAXPRESU];
+	  static short  i_shNumTerminal   [MAXPRESU];
+	  static short  i_shCapCode       [MAXPRESU];
+	  static short  i_shCodPlanCom    [MAXPRESU];
+	  static short  i_shCodCatImpos   [MAXPRESU];
+	  static short  i_shNumVenta      [MAXPRESU];
+	  static short  i_shNumTransaccion[MAXPRESU];
+	  static short  i_shNumAbonado    [MAXPRESU];
+	  static short  i_shIndSuperTel   [MAXPRESU];
+  	  static short  i_shCodTecnologia [MAXPRESU];
+  EXEC SQL END DECLARE SECTION  ;
+
+	vDTrazasLog (szExeName,
+    	        "\n\t\t* Parametros de Entrada a Cargar Fa_Presupuesto"
+               	"\n\t\t=>Num.Proceso [%ld]"
+               	"\n\t\t=>Cod.Cliente [%ld]", LOG05,
+               	lNumProceso, lCodCliente);
+
+  	lhNumProceso = lNumProceso;
+
+    strcpy(szFormatoFec1,"YYYYMMDDHH24MISS");
+    
+  	EXEC SQL DECLARE Cur_Presupuesto CURSOR FOR
+       SELECT /*+ index (FA_PRESUPUESTO FK_FA_PRESUPUESTO) */
+                   COD_CLIENTE    ,
+                   COD_CONCEPTO   ,
+                   COLUMNA        ,
+                   COD_PRODUCTO   ,
+                   COD_MONEDA     ,
+                   TO_CHAR (FEC_VALOR,:szFormatoFec1)      ,
+                   TO_CHAR (FEC_EFECTIVIDAD,:szFormatoFec1),
+                   IMP_CONCEPTO   ,
+                   IMP_MONTOBASE  ,
+                   IMP_FACTURABLE ,
+                   COD_REGION     ,
+                   COD_PROVINCIA  ,
+                   COD_CIUDAD     ,
+                   COD_MODULO     ,
+                   COD_PLANCOM    ,
+                   IND_FACTUR     ,
+                   COD_CATIMPOS   ,
+                   IND_ESTADO     ,
+                   COD_TIPCONCE   ,
+                   NUM_UNIDADES   ,
+                   COD_CICLFACT   ,
+                   COD_CONCEREL   ,
+                   COLUMNA_REL    ,
+                   NUM_ABONADO    ,
+                   NUM_TERMINAL   ,
+                   CAP_CODE       ,
+                   NUM_SERIEMEC   ,
+                   NUM_SERIELE    ,
+                   FLAG_IMPUES    ,
+                   FLAG_DTO       ,
+                   PRC_IMPUESTO   ,
+                   VAL_DTO        ,
+                   TIP_DTO        ,
+                   NUM_VENTA      ,
+                   NUM_TRANSACCION,
+                   MES_GARANTIA   ,
+                   IND_ALTA       ,
+                   IND_SUPERTEL   ,
+                   NUM_PAQUETE    ,
+                   IND_CUOTA      ,
+                   NUM_CUOTAS     ,
+                   ORD_CUOTA	  ,
+                   COD_TECNOLOGIA 
+             FROM  FA_PRESUPUESTO
+             WHERE NUM_PROCESO = :lhNumProceso; 
+
+   	EXEC SQL OPEN Cur_Presupuesto;
+
+   	if (SQLCODE)
+       iDError (szExeName,ERR000,vInsertarIncidencia,"Open=>Fa_Presupuesto",
+                szfnORAerror ());
+   	
+   	while(iFetchedRows == iRetrievRows)
+	{
+    	EXEC SQL FETCH Cur_Presupuesto
+               INTO :lhCodCliente     ,
+                    :ihCodConcepto    ,
+                    :lhColumna        ,
+                    :ihCodProducto    ,
+                    :szhCodMoneda     ,
+                    :szhFecValor      ,
+                    :szhFecEfectividad,
+                    :dhImpConcepto    ,
+                    :dhImpMontoBase   ,
+                    :dhImpFacturable  ,
+                    :szhCodRegion     ,
+                    :szhCodProvincia  ,
+                    :szhCodCiudad     ,
+                    :szhCodModulo     ,
+                    :lhCodPlanCom     ,
+                    :shIndFactur      ,
+                    :ihCodCatImpos    ,
+                    :shIndEstado      :i_shIndEstado     ,
+                    :ihCodTipConce    :i_shCodTipConce   ,
+                    :ihNumUnidades    :i_shNumUnidades   ,
+                    :lhCodCiclFact    :i_shCodCiclFact   ,
+                    :ihCodConceRel    :i_shCodConceRel   ,
+                    :lhColumnaRel     :i_shColumnaRel    ,
+                    :lhNumAbonado     :i_shNumAbonado    ,
+                    :szhNumTerminal   :i_shNumTerminal   ,
+                    :lhCapCode        :i_shCapCode       ,
+                    :szhNumSerieMec   :i_shNumSerieMec   ,
+                    :szhNumSerieLe    :i_shNumSerieLe    ,
+                    :shFlagImpues     :i_shFlagImpues    ,
+                    :shFlagDto        :i_shFlagDto       ,
+                    :fhPrcImpuesto    :i_shPrcImpuesto   ,
+                    :dhValDto         :i_shValDto        ,
+                    :shTipDto         :i_shTipDto        ,
+                    :lhNumVenta       :i_shNumVenta      ,
+                    :lhNumTransaccion :i_shNumTransaccion,
+                    :ihMesGarantia    :i_shMesGarantia   ,
+                    :shIndAlta        :i_shIndAlta       ,
+                    :shIndSuperTel    :i_shIndSuperTel   ,
+                    :ihNumPaquete     :i_shNumPaquete    ,
+                    :shIndCuota       :i_shIndCuota      ,
+                    :ihNumCuotas      :i_shNumCuotas     ,
+                    :ihOrdCuota       :i_shOrdCuota      ,
+                    :szhCodTecnologia :i_shCodTecnologia ;
+
+
+             if (SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+                 iDError (szExeName,ERR000,vInsertarIncidencia,
+                          "Fetch=>Fa_Presupuesto",szfnORAerror ());
+             
+			iRetrievRows = sqlca.sqlerrd[2] - iLastRows;
+			iLastRows = sqlca.sqlerrd[2];
+             
+            for (x=0; x < iRetrievRows; x++)
+			{
+                 i = stPreFactura.iNumRegistros;
+
+                 stPreFactura.A_PFactura.lNumProceso [i] = lhNumProceso   ;
+                 stPreFactura.A_PFactura.lCodCliente [i] = lhCodCliente [x];
+                 stPreFactura.A_PFactura.iCodConcepto[i] = ihCodConcepto[x];
+                 stPreFactura.A_PFactura.lColumna    [i] = lhColumna    [x];
+                 stPreFactura.A_PFactura.iCodProducto[i] = ihCodProducto[x];
+
+                 if (stCliente.lCodCliente <= 0)
+                 {
+                     stCliente.lCodCliente = lhCodCliente[x];
+				 	/* RAO110402: se carga el stcliente */
+				 	if (!bfnGetDatosCliente (stCliente.lCodCliente))
+       					return FALSE;
+       					
+       			 }
+                 memset (&stConcepto, 0, sizeof (CONCEPTO));
+                 if (!bFindConcepto (ihCodConcepto[x], &stConcepto))
+                      return FALSE;
+
+                 strcpy (stPreFactura.A_PFactura.szDesConcepto   [i],
+                         stConcepto.szDesConcepto);
+                 strcpy (stPreFactura.A_PFactura.szCodMoneda     [i],
+                         szhCodMoneda[x])         ;
+                 strcpy (stPreFactura.A_PFactura.szFecValor      [i],
+                         szhFecValor [x])         ;
+                 strcpy (stPreFactura.A_PFactura.szFecEfectividad[i],
+                         szhFecEfectividad[x])    ;
+
+                 stPreFactura.A_PFactura.dImpConcepto  [i] = dhImpConcepto[x]  ;
+
+                 stPreFactura.A_PFactura.dImpFacturable[i] = fnCnvDouble(dhImpFacturable[x], USOFACT);
+                 stPreFactura.A_PFactura.dImpMontoBase [i] = dhImpMontoBase[x] ;
+
+                 strcpy (stPreFactura.A_PFactura.szCodRegion   [i],
+                         szhCodRegion [x]  );
+                 strcpy (stPreFactura.A_PFactura.szCodProvincia[i],
+                         szhCodProvincia[x]);
+                 strcpy (stPreFactura.A_PFactura.szCodCiudad   [i],
+                         szhCodCiudad[x]   );
+                 strcpy (stPreFactura.A_PFactura.szCodModulo   [i],
+                         szhCodModulo[x]   );
+
+                 stPreFactura.A_PFactura.lCodPlanCom [i]   = lhCodPlanCom [x];
+                 stPreFactura.A_PFactura.iIndFactur  [i]   = shIndFactur  [x];
+                 stPreFactura.A_PFactura.iCodCatImpos[i]   = ihCodCatImpos[x];
+                 stPreFactura.A_PFactura.iCodPortador[i]   = ihCodPortador[x];
+                 stPreFactura.A_PFactura.iIndEstado  [i]   =
+                                   (i_shIndEstado  [x]== -1)?-1:shIndEstado  [x];
+                 stPreFactura.A_PFactura.iCodTipConce[i]   =
+                                   (i_shCodTipConce[x]== -1)?-1:ihCodTipConce[x];
+                 stPreFactura.A_PFactura.lNumUnidades[i]   =
+                                   (i_shNumUnidades[x]== -1)?-1:ihNumUnidades[x];
+                 stPreFactura.A_PFactura.lCodCiclFact[i]   =
+                                   (i_shCodCiclFact[x]== -1)?-1:lhCodCiclFact[x];
+                 stPreFactura.A_PFactura.iCodConceRel[i]   =
+                                   (i_shCodConceRel[x]== -1)?-1:ihCodConceRel[x];
+                 stPreFactura.A_PFactura.lColumnaRel [i]   =
+                                   (i_shColumnaRel [x]== -1)?-1:lhColumnaRel [x];
+                 stPreFactura.A_PFactura.lNumAbonado [i]   =
+                                   (i_shNumAbonado [x]== -1)?-1:lhNumAbonado [x];
+
+                 strcpy (stPreFactura.A_PFactura.szNumTerminal[i] ,
+                         (i_shNumTerminal [x]== -1)?"":szhNumTerminal[x]);
+
+                 stPreFactura.A_PFactura.lCapCode [i]      =
+                         (i_shCapCode[x]    == -1)?-1:lhCapCode[x]    ;
+
+                 strcpy (stPreFactura.A_PFactura.szNumSerieMec[i] ,
+                         (i_shNumSerieMec[x] == -1)?"":szhNumSerieMec[x]);
+                 strcpy (stPreFactura.A_PFactura.szNumSerieLe [i] ,
+                         (i_shNumSerieLe[x]  == -1)?"":szhNumSerieLe [x]);
+
+                 stPreFactura.A_PFactura.iFlagImpues [i]   =
+                         (i_shFlagImpues[x] == -1)?-1:shFlagImpues[x] ;
+                 stPreFactura.A_PFactura.iFlagDto    [i]   =
+                         (i_shFlagDto[x]    == -1)?-1:shFlagDto    [x];
+                 stPreFactura.A_PFactura.fPrcImpuesto[i]   =
+                         (i_shPrcImpuesto[x]== -1)?-1:fhPrcImpuesto[x];
+                 stPreFactura.A_PFactura.dValDto     [i]   =
+                         (i_shValDto     [x]== -1)?-1:dhValDto     [x];
+                 stPreFactura.A_PFactura.iTipDto     [i]   =
+                         (i_shTipDto     [x]== -1)?-1:shTipDto     [x];
+                 stPreFactura.A_PFactura.lNumVenta   [i]   =
+                         (i_shNumVenta   [x]== -1)?-1:lhNumVenta   [x];
+
+                 stPreFactura.A_PFactura.lNumTransaccion[i]=
+                         (i_shNumTransaccion[x] == -1)?-1:lhNumTransaccion[x];
+
+                 stPreFactura.A_PFactura.iMesGarantia [i]  =
+                         (i_shMesGarantia[x]== -1)?-1:ihMesGarantia[x];
+
+                 strcpy (stPreFactura.A_PFactura.szNumGuia[i] ,
+                         (i_shNumGuia[x] == -1)?"":szhNumGuia[x])     ;
+
+                 stPreFactura.A_PFactura.iIndAlta     [i]  =
+                         (i_shIndAlta [x]== -1)?-1:shIndAlta  [x]     ;
+                 stPreFactura.A_PFactura.iIndSuperTel [i]  =
+                         (i_shIndSuperTel[x] == -1)?-1:shIndSuperTel [x] ;
+                 stPreFactura.A_PFactura.iNumPaquete  [i]  =
+                         (i_shNumPaquete[x]  == -1)?-1:ihNumPaquete[x];
+                 stPreFactura.A_PFactura.iIndCuota    [i]  =
+                         (i_shIndCuota  [x]  == -1)?-1:shIndCuota  [x];
+                 stPreFactura.A_PFactura.iNumCuotas   [i]  =
+                         (i_shNumCuotas  [x] == -1)?-1:ihNumCuotas [x];
+                 stPreFactura.A_PFactura.iOrdCuota    [i]  =
+                         (i_shOrdCuota   [x] == -1)?-1:ihOrdCuota  [x];
+
+                 /**********************************************************/
+                 /* Recogemos Informacion para la Cabecera del Documento   */
+                 /**********************************************************/
+                 if (stPreFactura.A_PFactura.iIndSuperTel [i] == 1 &&
+                     stCliente.iIndSuperTel                   <  1 )
+                 {
+                     stCliente.iIndSuperTel = 1;
+                 }
+                 if (stPreFactura.A_PFactura.iIndCuota [i] == 1 &&
+                     stCliente.iIndCredito                 <  1)
+                 {
+                     stCliente.iIndCredito = 1;
+                 }
+				 if (stConcepto.sIndTecnologia == 1 && i_shCodTecnologia[x] != -1)
+				 {
+	                 strcpy (stPreFactura.A_PFactura.szCodTecnologia [i], szhCodTecnologia [x]);
+	             }
+	             else
+	             {
+	             	 strcpy (stPreFactura.A_PFactura.szCodTecnologia [i], stConcepto.szDefTecnologia );
+	             }
+                 
+                 stPreFactura.iNumRegistros++;
+
+             }/* fin sqlok ... */
+
+   	}/* fin while ... */
+   	if (SQLCODE == SQLNOTFOUND)
+   	{
+       EXEC SQL CLOSE Cur_Presupuesto;
+       if (SQLCODE)
+           iDError (szExeName,ERR000,vInsertarIncidencia,
+                    "Close=>Fa_Presupuesto",szfnORAerror ());
+   	}
+   	vDTrazasLog (szExeName,"\n\t\t* Conceptos de la Factura Cargados [%d]",
+                LOG03, stPreFactura.iNumRegistros);
+
+	if (stPreFactura.iNumRegistros == 0)
+	{
+		iDError (szExeName,ERR000,vInsertarIncidencia,                    
+                    "Error: No se encontraron registros en FA_PRESUPUESTO",numstr(stPreFactura.iNumRegistros));
+        return (FALSE);
+    }               
+   	return (SQLCODE != SQLOK)?FALSE:TRUE;
+}/************************ Final bfnDBCargaPresupuesto **********************/

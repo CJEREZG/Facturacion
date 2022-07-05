@@ -1,0 +1,118 @@
+/*****************************************************************************/
+/* Fichero    : prebilnot.pc                                                 */
+/* Descripcion: funcion que realiza el PreBilling de Notas Credito y Notas   */
+/*              Debito, aplica descuentos e impuestos generados en el momento*/
+/*              de generar la factura Origen (la que se modifica).           */
+/* Autor      : Javier Garcia Paredes                                        */
+/* Fecha      : 19-05-1997                                                   */
+/*****************************************************************************/
+#define _PREBILNOT_PC_
+
+#include <prebilnot.h>
+
+EXEC SQL INCLUDE sqlca;
+
+/*****************************************************************************/
+/*                       funcion : bfnPreBillingClienteNotas                 */
+/*****************************************************************************/
+BOOL bfnPreBillingClienteNotas (long lNumProceso,int iTipoFact)
+{
+    /* Se inicializa la estructura de anomalias */
+    vInitAnomProceso (&stAnomProceso);
+
+    stAnomProceso.lNumProceso = lNumProceso;
+
+
+    if (iTipoFact == FACT_NOTACRED)
+    {
+        strcpy (stAnomProceso.szDesProceso,"PreBilling Nota Credito")         ;
+        vDTrazasLog  (szExeName,"\n\t\t* NOTA CREDITO"
+                                "\n\t\t=>Num.Proceso [%ld]",LOG03,lNumProceso);
+        vDTrazasError(szExeName,"\n\t\t* NOTA CREDITO"
+                                "\n\t\t=>Num.Proceso [%ld]",LOG03,lNumProceso);
+    }
+    if (iTipoFact == FACT_NOTADEBI)
+    {
+        strcpy (stAnomProceso.szDesProceso,"PreBilling Nota Debito ")         ;
+        vDTrazasLog  (szExeName,"\n\t\t* NOTA DEBITO"
+                                "\n\t\t=>Num.Proceso [%ld]",LOG03,lNumProceso);
+        vDTrazasError(szExeName,"\n\t\t* NOTA DEBITO"
+                                "\n\t\t=>Num.Proceso [%ld]",LOG03,lNumProceso);
+    }
+    if (!bfnGetDatosCliente (stCliente.lCodCliente))
+    {
+         return FALSE;
+    } 
+    if (!bfnIFNotas ())
+    {
+         vDTrazasError(szExeName,"\n\t\t* Error Cargando Conceptos de Notas\n",
+                       LOG03);
+         vDTrazasLog  (szExeName,"\n\t\t* Error Cargando Conceptos de Notas\n",
+                       LOG03);
+         return FALSE;
+    }
+    if (!bfnGetDirecCli (stCliente.lCodCliente, TIPDIRECCION_FACTURA))
+    {
+         return FALSE;
+    }
+   if (stProceso.iIndNotaCredC == 0)
+    {
+        if (!bImptosIvaNotas (iTipoFact))
+        {
+             vDTrazasLog  (szExeName,
+                           "\n\t\t* Error Aplicando Impuestos a Notas\n",LOG03); 
+             vDTrazasError(szExeName,
+                           "\n\t\t* Error Aplicando Impuestos a Notas\n",LOG03);
+             return FALSE;
+        }
+    }
+    if (!bfnPasoHistoricos ())
+    {
+         vDTrazasLog  (szExeName,
+                       "\n\t\t* Error Paso a Historicos de Nota\n",LOG03);
+         vDTrazasError(szExeName,
+                       "\n\t\t* Error Paso a Historicos de Nota\n",LOG03);
+         return FALSE;
+    }
+    if (!bfnDBUpdateAjustes ())
+         return FALSE;
+/*
+    if (!bfnImprimeFactura ( szSysDate ,
+                            stCliente.lCodCliente,
+                            stHistDocu.iCodTipDocum, 1))
+    {
+         iDError (szExeName,ERR041,vInsertarIncidencia);
+    }
+    else
+    {
+         if (!bfnDBUpdateIndImpresa (stHistDocu, iTipoFact))
+              return FALSE;
+    }
+*/
+    return TRUE;
+}/************************ Final bfnPreBillingClienteNotas *******************/
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

@@ -1,0 +1,3266 @@
+/******************************************************************************
+ Fichero    : pretar.pc
+ Descripcion:
+ Fecha      : 23-01-97
+ Autor      : Javier Garcia Paredes
+*******************************************************************************/
+
+#define _PRETAR_PC_
+
+#include "pretar.h"
+
+
+EXEC SQL INCLUDE sqlca;
+
+/*----------------------------------------------------------------------------*/
+/* Funcion de busqueda en arreglo de ciclos facturados.                       */
+/*----------------------------------------------------------------------------*/
+BOOL bBusca_Ciclo (long lCodCiclFact)
+{
+    int i=0;
+
+    while( (lCodCiclFact != (long)iArrCiclo[i]) && (i <= NUM_IARRCICLO) )
+    {
+        i++;
+    }
+    if( i > NUM_IARRCICLO )   /* Periodo no encontrado en arreglo */
+    {
+        vDTrazasLog(szExeName, "Periodo [%ld] no encontrado ...", LOG05, lCodCiclFact);
+        return(FALSE);
+    }
+    return(1);
+}
+
+
+/* -------------------------------------------------------------------------- */
+/*   bIFTarificacion (long)                                                   */
+/*      Valores Retorno: FALSE - Error                                        */
+/*                       TRUE  - Ningun Error                                 */
+/* -------------------------------------------------------------------------- */
+BOOL bfnIFTarificacion (int iTipoFact)
+{
+    BOOL bRes  = 1;
+    int  iCont = 0;
+    int  iIndAlquiler;
+
+    if( iTipoFact == FACT_CICLO )
+        memset (&stPlanOptimo, 0, sizeof (EST));
+
+    vDTrazasLog (szExeName,"\n\t\t* Cargando TARIFICACION ",LOG04);
+
+    strncpy (stAnomProceso.szDesProceso,"PreBilling Tarificacion (Carga)",
+             sizeof(stAnomProceso.szDesProceso));
+
+	switch( iTipoFact )
+    {
+        case FACT_RENTAPHONE:
+            if( !bfnLeeConceptosRentPhone (stCliente.pAboRent) )
+                bRes = FALSE;
+            break;
+        case FACT_ROAMINGVIS:
+            if( stCiclo.iInd_Tasacion==TIPO_TASA_ON_LINE)
+            {
+                if( !bfnLeeConceptosRoamingVis (stCliente.pAboRoaVis) )
+                     bRes = FALSE;
+            }
+            break;
+        case FACT_CICLO      :
+        case FACT_BAJA       :
+        case FACT_LIQUIDACION:
+            if( iTipoFact == FACT_LIQUIDACION )
+            {
+/*
+                if( stCiclo.iInd_Tasacion==TIPO_TASA_ON_LINE)
+                {
+                    if( !bfnLeeAbonadosTOL(iTipoFact) )
+                        return(FALSE);
+                }
+                else
+*/
+                {
+                    if( !bfnLeeAbonados (iTipoFact) )
+                        return(FALSE);
+                }
+            }
+            /*****************************************************************/
+            /*  Los Abonados a Tasar, se carga en el interface's de Servicios*/
+            /*****************************************************************/
+            while( iCont < stCliente.iNumAbonados && bRes )
+            {
+/*
+                if( stCiclo.iInd_Tasacion==TIPO_TASA_ON_LINE)
+                {
+                    if( !bfnLee_TOL_Acumper(&(stCliente.pAbonados[iCont])) )
+                        bRes = FALSE;
+                }
+                else
+*/
+                {
+                    if( !bfnLeeConceptos(&(stCliente.pAbonados[iCont])) )
+                        bRes = FALSE;
+                }
+                if( bRes )
+                {
+                    iIndAlquiler = 0;
+
+                    if( !bfnLeeConceptosCarriers (&stCliente.pAbonados[iCont],
+                     stCliente.pAboRent,  iIndAlquiler) )
+                        bRes = FALSE;
+                    else
+                        iCont++;
+                }
+            }
+
+            break;
+    }/* fin switch */
+
+    if( bRes )
+    {
+        vfnPrintConcTarificacion ();
+    }
+    return(bRes);
+}/************************ Final bIFTarificacion *****************************/
+
+/*****************************************************************************/
+/*                          funcion : bfnLeeAbonados                         */
+/* -Funcion que carga los NumAbono de Ga_Infa% que cumplen las condiciones,de*/
+/*  estar en las tablas de Ta_Acum%, dependiendo del producto iremos a unas  */
+/*  tablas o a otras.                                                        */
+/* -Valores Retorno : Error->FALSE, !Error->TRUE                             */
+/*****************************************************************************/
+static BOOL bfnLeeAbonados(int iTipoFact)
+{
+    BOOL bRes = TRUE ;
+    long lInd = 0    ;
+
+    stCliente.pAbonados = (ABONTAR *)NULL;
+
+    if( iTipoFact == FACT_BAJA||iTipoFact == FACT_LIQUIDACION )
+    {
+     /*******************************************************************/
+     /* La estructura stAbonoCli solo tendra un abono-producto, que es  */
+     /* el cual se da de baja o se liquida, es la unica diferencia.     */
+     /*******************************************************************/
+        if( !bfnCargaAbonadosCliente (&stAbonoCli.pCicloCli[0],iTipoFact) )
+            return(FALSE);
+    }
+    else if( iTipoFact == FACT_CICLO )
+    {
+        while( lInd < stAbonoCli.lNumAbonados && bRes )
+        {
+            if( !bfnCargaAbonadosCliente(&stAbonoCli.pCicloCli[lInd],FACT_CICLO) )
+                bRes = FALSE;
+            else
+                lInd++;
+        }/* fin While lInd ... */
+    }
+    return(bRes);
+}/*************************** Funcion bfnLeeAbonados *************************/
+
+/*****************************************************************************/
+/* -Funcion que carga los conceptos para un abonado (Ta_ConcepFact)          */
+/* -Valores Retorno : Error->FALSE,!Error->TRUE                              */
+/*****************************************************************************/
+static BOOL bfnLeeConceptos(ABONTAR* pAbon)
+{
+    int  iCont1= 0     ;
+
+    int  iCodProducto=0;
+    long lNumAbonado =0;
+
+    /* CONCEPTO stConcepto; */
+    EST      stEstProc ;
+	CONCEP   stConcep;
+
+    vDTrazasLog (szExeName,"\n\t\t* Entrada en bfnLeeConceptos", LOG05);
+
+	/* rao: se reemplaza por estructura dinamica stConcep2
+	    memset (&stConcep  ,0,sizeof(CONCEP)) ; */
+	/* memset (&stConcepto,0,sizeof(CONCEPTO));  */
+
+	/* estructura dinamica para cargo de conceptode trafico */
+
+    memset (&stEstProc ,0,sizeof(EST))     ;
+    memset (&stConcep ,0,sizeof(stConcep))     ;
+
+    lNumAbonado = pAbon->lNumAbonado ;
+    iCodProducto= pAbon->iCodProducto;
+
+    if( !bfnLeeAcumFraSoc(&stConcep, lNumAbonado, iCodProducto) )
+    {
+        iDError (szExeName,ERR005,vInsertarIncidencia,"bfnLeeAcumFraSoc");
+        return(FALSE);
+
+    }
+    if( !bfnLeeAcumOper (&stConcep, lNumAbonado) )
+    {
+        iDError (szExeName,ERR005,vInsertarIncidencia,"bfnLeeAcumOper");
+        return(FALSE);
+
+    }
+    if( !bfnLeeAcumLlamadasRoa(&stConcep, lNumAbonado) )
+    {
+        iDError (szExeName,ERR005,vInsertarIncidencia,"bfnLeeAcumLlamadasRoa");
+        return(FALSE);
+
+    }
+
+    iCont1= 0;
+
+	/*CMD -- TRAZADOR -- INC. 189483 */
+     vDTrazasLog (szExeName,"\n\t\t*stConcep.iNumConc: [%i]",LOG03,stConcep.iNumConc);
+	/*HASTA AQUI*/
+
+    while( iCont1<stConcep.iNumConc )
+    {
+        if( stConcep.stConcTar[iCont1].iCodProducto == pAbon->iCodProducto &&
+            (stConcep.stConcTar[iCont1].iIndTabla == ROAMING  ||
+             stConcep.stConcTar[iCont1].iIndTabla == ACUMOPER ||
+             stConcep.stConcTar[iCont1].iIndTabla == FRASOC) )
+        {
+            /* --Validacion del Concepto -- */
+            /* El concepto se imprime si :                                  */
+            /* dImpConsumido >= 0.01                                        */
+            /* OR                                                           */
+            /* stParConcTrafico.iConsConcTrafico == 1 && lSegConsumido > 60 */
+            /* FAR. 20020827 */
+
+			/*CMD -- TRAZADOR -- INC. 189483 */
+
+            vDTrazasLog (szExeName,"\n\t\t*CHEK lNumAbonado [%ld]"
+			                       "\n\t\t* stConcep.stConcTar[iCont1].dImpConsumido    : [%f]"
+                             "\n\t\t* stConcep.stConcTar[iCont1].iValParametro 		: [%d] ",LOG03,
+								   lNumAbonado,
+								   stConcep.stConcTar[iCont1].dImpConsumido,
+                   stConcep.stConcTar[iCont1].iValParametro);
+
+
+
+            /*if( (stConcep.stConcTar[iCont1].dImpConsumido >= 0.01) || (pstParamGener.iConsConcTrafico == 1) ) */
+            if( (stConcep.stConcTar[iCont1].dImpConsumido >= 0.01) || (stConcep.stConcTar[iCont1].iValParametro == 1) ) /* PGG - 193496 - 28-03-2013 */
+            {
+
+                if( !bfnValidacionConcTar (&stConcep.stConcTar[iCont1]) ) return(FALSE);
+                if( (pAbon->pConcTar=
+                     (CONCTAR *)realloc ( (CONCTAR *)pAbon->pConcTar,
+                                          sizeof(CONCTAR)*(pAbon->iNumConcTar+1) ))==(CONCTAR *)NULL )
+                {
+                    iDError (szExeName,ERR005,vInsertarIncidencia,
+                             "pAbon->pConcTar");
+                    return(FALSE);
+                }
+
+                memcpy (&pAbon->pConcTar[pAbon->iNumConcTar],&stConcep.stConcTar[iCont1],
+                        sizeof (CONCTAR));
+
+                switch( stConcep.stConcTar[iCont1].iIndTabla )
+                {
+                    case FRASOC   : if( stConcep.stConcTar[iCont1].iIndEntSal == iENTRANTE )
+                        {
+                            stEstProc.iNumConcLocalEnt++     ;
+                            stEstProc.dTotImpLocalEnt +=
+                            stConcep.stConcTar[iCont1].dImpConsumido;
+                        }
+                        if( stConcep.stConcTar[iCont1].iIndEntSal == iSALIENTE )
+                        {
+                            stEstProc.iNumConcLocalSal++     ;
+                            stEstProc.dTotImpLocalSal +=
+                            stConcep.stConcTar[iCont1].dImpConsumido;
+                        }
+                        stEstProc.lSegTotLocal +=
+                        stConcep.stConcTar[iCont1].lSegConsumido;
+                        break;
+                    case ACUMOPER : stEstProc.iNumConcOper++         ;
+                        stEstProc.dTotImpOper   +=
+                        stConcep.stConcTar[iCont1].dImpConsumido;
+                        break                            ;
+                    case ROAMING  : stEstProc.iNumConcRoaming++      ;
+                        stEstProc.dTotImpRoaming+=
+                        stConcep.stConcTar[iCont1].dImpConsumido;
+                        break                            ;
+                }/* fin switch */
+                pAbon->iNumConcTar++;
+            }/* fin if >= 0.0 .. */
+        }/* if CodProducto ... */
+        iCont1++;
+
+    }/* fin while */
+    vDTrazasLog (szExeName,
+                 "\n\t\t* Estadisticas de Trafico para el Abonado :   [%ld]"
+                 "\n\t\t=>Conceptos Trafico Local Entrante            [%d]"
+                 "\n\t\t=>Importe Total Trafico Local Entrante (Pesos)[%.f]"
+                 "\n\t\t=>Conceptos Trafico Local Saliente            [%d]"
+                 "\n\t\t=>Importe Total Trafico Local Saliente (Pesos)[%.f]"
+                 "\n\t\t=>Conceptos Trafico Larga Distancia           [%d]"
+                 "\n\t\t=>Importe Total Trafico Larga Distancia(Pesos)[%.f]"
+                 "\n\t\t=>Conceptos Trafico Roaming                   [%d]"
+                 "\n\t\t=>Importe Total Trafico Roaming (Dolares)     [%.f]"
+                 ,LOG04,pAbon->lNumAbonado, stEstProc.iNumConcLocalEnt,
+                 stEstProc.dTotImpLocalEnt, stEstProc.iNumConcLocalSal,
+                 stEstProc.dTotImpLocalSal, stEstProc.iNumConcOper    ,
+                 stEstProc.dTotImpOper    , stEstProc.iNumConcRoaming ,
+                 stEstProc.dTotImpRoaming);
+
+    if( stProceso.iCodTipDocum == stDatosGener.iCodCiclo )
+    {
+        stPlanOptimo.lSegTotLocal += stEstProc.lSegTotLocal;
+    }
+
+	bLiberaEstrConc(&stConcep);
+
+    return(1);
+}/************************** Final bfnLeeConceptos ***************************/
+
+/*****************************************************************************/
+/*                          funcion : bfnLeeConceptosCarriers                */
+/* -Funcion que carga los conceptos para un abonado (Fa_FactCarriers)        */
+/* -Valores Retorno : Error->FALSE,!Error->TRUE                              */
+/*****************************************************************************/
+static BOOL bfnLeeConceptosCarriers (ABONTAR* pAbon ,
+                                     ABORENT* pARent,
+                                     int      iIndAlquiler)
+{
+    int  iCont   = 0 ;
+    int  iRepite = 0 ;
+    int  iCasos  = 1 ;
+    int  iFortas = 0 ;
+    int  iForadi = 0 ;
+
+    CONCTAR  stConcTar    ;
+    CONCTAR  stConcForadi ;
+    CONCTAR  stConcFortas ;
+    CONCEPTO stConcepto   ;
+    EST      stEstProc    ;
+
+    memset (&stConcTar ,0,sizeof(CONCTAR)) ;
+    memset (&stConcepto,0,sizeof(CONCEPTO));
+    memset (&stEstProc ,0,sizeof(EST))     ;
+
+    if( iIndAlquiler == 1 )
+    {
+        stConcTar.lNumAbonado = pARent->lNumAbonado      ;
+        stConcTar.iCodProducto= stDatosGener.iProdCelular;
+    }
+    else
+    {
+        stConcTar.lNumAbonado = pAbon->lNumAbonado ;
+        stConcTar.iCodProducto= pAbon->iCodProducto;
+    }
+
+    while( iCont<NUM_FACTCARRIERS )
+    {
+        stConcTar.iCodFacturacion = pstFactCarriers [iCont].iCodConcFact   ;
+        stConcTar.dImpConsumido   = 0                                      ;
+        stConcTar.lSegConsumido   = 0                                      ;
+        stConcTar.lNumPulsos      = 0                                      ;
+        stConcTar.lNumProceso     = stStatus.IdPro                         ;
+        stConcTar.iCodOperador    = pstFactCarriers [iCont].iCodConcCarrier;
+        stConcTar.iCodFranHoraSoc = 0                                      ;
+        stConcTar.iIndEntSal      = 0                                      ;
+        stConcTar.iIndTabla       = 0                                      ;
+        stConcTar.iCarrier        = 0                                      ;
+
+        if( !bFindConcepto (stConcTar.iCodFacturacion, &stConcepto) )
+            return(FALSE);
+
+        memcpy (&stConcFortas, &stConcTar, sizeof (CONCTAR));
+
+        stConcFortas.iCarrier = iFORTAS;
+
+        if( !bfnDBLeeAcumFortas (&stConcFortas,
+                                 pstFactCarriers [iCont].iCodConcCarrier,
+                                 stConcepto.iCodTipConce) )
+            return(FALSE);
+
+        memcpy (&stConcForadi, &stConcTar, sizeof (CONCTAR));
+        stConcForadi.iCarrier = iFORADI;
+
+        if( !bfnDBLeeAcumForadi (&stConcForadi,
+                                 pstFactCarriers [iCont].iCodConcCarrier,
+                                 stConcepto.iCodTipConce) )
+            return(FALSE);
+
+        iRepite = 0;
+
+        iFortas = (stConcFortas.dImpConsumido >= 0.01)?1:0;
+        iForadi = (stConcForadi.dImpConsumido >= 0.01)?1:0;
+
+        iCasos  = (iFortas && iForadi)?2:
+                  (iFortas || iForadi)?1:0;
+
+        while( iRepite < iCasos )
+        {
+            switch( iCasos )
+            {
+                case 1 :
+                    if( iFortas )
+                        memcpy (&stConcTar, &stConcFortas, sizeof (CONCTAR));
+                    if( iForadi )
+                        memcpy (&stConcTar, &stConcForadi, sizeof (CONCTAR));
+                    break;
+                case 2 :
+                    if( iRepite == 0 )
+                        memcpy (&stConcTar, &stConcFortas, sizeof (CONCTAR));
+                    else
+                        memcpy (&stConcTar, &stConcForadi, sizeof (CONCTAR));
+                    break;
+                default :
+                    break;
+            }
+             /* --Validacion del Concepto -- */
+            if( stConcTar.dImpConsumido >= 0.01 )
+            {
+                if( !bfnValidacionCarrier (&stConcTar, stConcepto) )
+                    return(FALSE);
+                if( iIndAlquiler == 0 )
+                {
+                    if( (pAbon->pConcTar=
+                         (CONCTAR *)realloc((CONCTAR *)pAbon->pConcTar,
+                                            sizeof(CONCTAR)*(pAbon->iNumConcTar+1) ))
+                        ==(CONCTAR *)NULL )
+                    {
+                        iDError (szExeName,ERR005,vInsertarIncidencia,
+                                 "pAbon->pConcTar");
+                        return(FALSE);
+                    }
+                    memcpy (&pAbon->pConcTar[pAbon->iNumConcTar],&stConcTar,
+                            sizeof (CONCTAR));
+                    pAbon->iNumConcTar++;
+
+                }
+                else
+                {
+                    if( (pARent->pConcTar =
+                         (CONCTAR *)realloc ((CONCTAR *)pARent->pConcTar,
+                                             sizeof(CONCTAR)*(pARent->iNumConcTar+1)))
+                        ==(CONCTAR*)NULL )
+                    {
+                        iDError (szExeName,ERR005,vInsertarIncidencia,
+                                 "pARent->pConcTar");
+                        return(FALSE                );
+                    }
+                    memcpy (&pARent->pConcTar[pARent->iNumConcTar],
+                            &stConcTar,sizeof(CONCTAR));
+                    pARent->iNumConcTar++;
+                }
+                stEstProc.dTotImpCarriers  += stConcTar.dImpConsumido;
+                stEstProc.iNumConcCarriers += 1                      ;
+
+            }/* fin if dImpConsumido >= 0.01 */
+            iRepite++;
+
+        }/* fin while iRepite ... */
+        iCont++;
+
+    }/* fin while */
+    vDTrazasLog (szExeName,
+                 "\n\t\t=>Conceptos Trafico Carriers                  [%d]"
+                 "\n\t\t=>Importe Total Trafico Carriers              [%f]",LOG04,
+                 stEstProc.iNumConcCarriers, stEstProc.dTotImpCarriers);
+
+    return(1);
+}/************************** Final bfnLeeConceptosCarriers *******************/
+
+/*****************************************************************************/
+/*                         funcion : bfnDBLeeAcumForadi                      */
+/*****************************************************************************/
+static BOOL bfnDBLeeAcumForadi (CONCTAR *pstConcTar  ,
+                                int      iCodOperador,
+                                int      iCodTipConce)
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+    char szhRowid[19];
+    static long   lhCodPeriodo    ;
+    int   iCero=0;
+    EXEC SQL END DECLARE SECTION;
+
+    static double dImpConsumido = 0.0;
+    static short  shIndAlquiler      ;
+
+    EXEC SQL DECLARE Cur_AcumForadi CURSOR FOR
+    SELECT ROWID, COD_PERIODO, IMP_CONSUMIDO
+    FROM   FA_ACUMFORADI
+    WHERE  NUM_ABONADO = :pstConcTar->lNumAbonado
+                         AND  IND_ALQUILER= :shIndAlquiler
+                         AND  COD_PERIODO > :iCero
+                         AND  COD_OPERADOR= :iCodOperador
+                         AND  COD_TIPCONCE= :iCodTipConce
+                         AND  COD_CLIENTE = :stCliente.lCodCliente
+                         AND  NUM_PROCESO = :iCero;
+
+    if( pstConcTar->lNumAlquiler > 0 )
+    {
+        shIndAlquiler = 1                       ;
+        lhCodPeriodo   = pstConcTar->lNumAlquiler;
+    }
+    else
+    {
+        shIndAlquiler = 0                       ;
+      /* lhCodPeriodo   = stCiclo.lCodCiclFact    ; */
+    }
+
+    vDTrazasLog (szExeName,"\n\t\t* Parametros de Entrada en Fa_AcumForadi"
+                           "\n\t\t=>Num.Abonado  [%ld]"
+                           "\n\t\t=>Cod.Operador [%d] "
+                           "\n\t\t=>Cod.Cliente  [%ld]"
+                           "\n\t\t=>Ind.Alquiler [%d] ", LOG04,
+                           pstConcTar->lNumAbonado, iCodOperador,
+                           stCliente.lCodCliente  , shIndAlquiler);
+
+    pstConcTar->iCodOperador = iCodOperador;
+
+    EXEC SQL OPEN Cur_AcumForadi;
+
+    if( SQLCODE )
+    {
+        iDError (szExeName,ERR000,vInsertarIncidencia,"Open=>Fa_AcumForadi",
+                 szfnORAerror ());
+        return(FALSE           );
+    }
+    while( SQLCODE == SQLOK )
+    {
+        dImpConsumido = 0.0;
+
+        EXEC SQL FETCH Cur_AcumForadi INTO :szhRowid, :lhCodPeriodo, :dImpConsumido;
+
+        if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+            iDError (szExeName,ERR000,vInsertarIncidencia,
+                     "Fetch=>Fa_AcumForadi", szfnORAerror ());
+        if( SQLCODE == SQLOK )
+        {
+
+		  /*CMD - TRAZADOR - 189483*/
+		         vDTrazasLog (szExeName,"\n\t\t*VARIABLES RESCATADAS tabla FA_ACUMFORADI"
+                 "\n\t\t=> =>Num.Abonado  [%ld]"
+				 "\n\t\t=>Cod.Cliente  [%ld]"
+                 "\n\t\t=> dImpConsumido    [%f]"
+				 "\n\t\t=> lhCodPeriodo    [%ld]",LOG05,
+                 pstConcTar->lNumAbonado,stCliente.lCodCliente ,dImpConsumido,lhCodPeriodo);
+		    /* HASTA AQUI */
+
+            if( bBusca_Ciclo(lhCodPeriodo))
+            {
+                pstConcTar->dImpConsumido += dImpConsumido;
+                EXEC SQL UPDATE FA_ACUMFORADI
+                SET NUM_PROCESO = :stStatus.IdPro
+                                  WHERE ROWID = :szhRowid;
+            }
+        }
+    }
+    if( SQLCODE == SQLNOTFOUND )
+    {
+        EXEC SQL CLOSE Cur_AcumForadi;
+        if( SQLCODE )
+            iDError (szExeName,ERR000,vInsertarIncidencia,"Close=>Fa_AcumForadi",
+                     szfnORAerror ());
+    }
+    return(SQLCODE != SQLOK)?FALSE:TRUE;
+}/************************** Final bfnDBLeeAcumForadi ************************/
+
+/*****************************************************************************/
+/*                         funcion : bfnDBLeeAcumFortas                      */
+/*****************************************************************************/
+static BOOL bfnDBLeeAcumFortas (CONCTAR *pstConcTar  ,
+                                int      iCodOperador,
+                                int      iCodTipConce)
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+    char szhRowid[19];
+    static long   lhCodPeriodo    ;
+    int  iCero=0;
+    EXEC SQL END DECLARE SECTION;
+
+    static double dImpConsumido = 0.0;
+    static long   lSegConsumido = 0  ;
+    static short  shIndAlquiler      ;
+
+    EXEC SQL DECLARE Cur_AcumFortas CURSOR FOR
+        SELECT ROWID, COD_PERIODO,  IMP_CONSUMIDO, SEG_CONSUMIDO
+        FROM   FA_ACUMFORTAS
+        WHERE  NUM_ABONADO = :pstConcTar->lNumAbonado
+                             AND  IND_ALQUILER= :shIndAlquiler
+                             AND  COD_PERIODO > :iCero
+                             AND  COD_OPERADOR= :iCodOperador
+                             AND  COD_TIPCONCE= :iCodTipConce
+                             AND  COD_CLIENTE = :stCliente.lCodCliente
+                             AND  NUM_PROCESO = :iCero;
+
+    if( pstConcTar->lNumAlquiler > 0 )
+    {
+        shIndAlquiler = 1                       ;
+        lhCodPeriodo   = pstConcTar->lNumAlquiler;
+    }
+    else
+    {
+        shIndAlquiler = 0                       ;
+      /* lhCodPeriodo   = stCiclo.lCodCiclFact    ; */
+    }
+    vDTrazasLog (szExeName,"\n\t\t* Parametros de Entrada en Fa_AcumFortas"
+                           "\n\t\t=>Num.Abonado  [%ld]"
+                           "\n\t\t=>Cod.Operador [%d] "
+                           "\n\t\t=>Cod.TipConce [%d] "
+                           "\n\t\t=>Cod.Cliente  [%ld]"
+                           "\n\t\t=>Ind.Alquiler [%d] ", LOG04,
+                           pstConcTar->lNumAbonado, iCodOperador, iCodTipConce,
+                           stCliente.lCodCliente, shIndAlquiler);
+
+    pstConcTar->iCodOperador = iCodOperador;
+
+
+    EXEC SQL OPEN Cur_AcumFortas;
+
+    if( SQLCODE )
+    {
+        iDError (szExeName,ERR000,vInsertarIncidencia,"Open=>Fa_AcumFortas",
+                 szfnORAerror ());
+        return(FALSE           );
+    }
+    while( SQLCODE == SQLOK )
+    {
+        dImpConsumido = 0.0;
+        lSegConsumido = 0  ;
+
+        EXEC SQL FETCH Cur_AcumFortas INTO :szhRowid, :lhCodPeriodo,
+        :dImpConsumido, :lSegConsumido;
+
+        if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+            iDError (szExeName,ERR000,vInsertarIncidencia,
+                     "Fetch=>Fa_AcumFortas", szfnORAerror ());
+        if( SQLCODE == SQLOK )
+        {
+
+		     /*CMD - TRAZADOR - 189483*/
+		         vDTrazasLog (szExeName,"\n\t\t*VARIABLES RESCATADAS tabla FA_ACUMFORTAS"
+                 "\n\t\t=> =>Num.Abonado  [%ld]"
+				 "\n\t\t=>Cod.Cliente  [%ld]"
+                 "\n\t\t=> dImpConsumido    [%f]",LOG05,
+                 pstConcTar->lNumAbonado,stCliente.lCodCliente ,dImpConsumido);
+		    /* HASTA AQUI */
+
+
+            if( bBusca_Ciclo(lhCodPeriodo))
+            {
+                pstConcTar->dImpConsumido += dImpConsumido;
+                pstConcTar->lSegConsumido += lSegConsumido;
+                EXEC SQL UPDATE FA_ACUMFORTAS
+                SET NUM_PROCESO = :stStatus.IdPro
+                                  WHERE ROWID = :szhRowid;
+            }
+        }
+    }
+    if( SQLCODE == SQLNOTFOUND )
+    {
+        EXEC SQL CLOSE Cur_AcumFortas;
+
+        if( SQLCODE )
+            iDError (szExeName,ERR000,vInsertarIncidencia,"Close=>Fa_AcumFortas",
+                     szfnORAerror ());
+    }
+    return(SQLCODE != SQLOK)?FALSE:TRUE;
+}/************************** Final bfnDBLeeAcumFortas ************************/
+
+
+/*****************************************************************************/
+/*                        funcion : bfnLeeAcumOperAlq                        */
+/* -Funcion que carga la informacion de consumos del Abonado y periodo en la */
+/*  la tabla Ta_AcumOperAlq      .                                           */
+/* -Valores Retorno : Error->FALSE, !Error->TRUE                             */
+/*****************************************************************************/
+static BOOL bfnLeeAcumOperAlq (CONCTAR *pConcTar,
+                               int      iCodTarificacion)
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+         int  iCero=0;
+    EXEC SQL END DECLARE SECTION;
+
+    static double dImpConsumido = 0.0;
+    static long   lSegConsumido = 0  ;
+    static long   lNumPulsos    = 0  ;
+
+    EXEC SQL DECLARE Cur_AcumOperAlq CURSOR FOR
+    SELECT /*+ index (TA_ACUMOPERALQ PK_TA_ACUMOPERALQ) */
+    IMP_CONSUMIDO,
+    SEG_CONSUMIDO,
+    NUM_PULSOS
+    FROM   TA_ACUMOPERALQ
+    WHERE  NUM_ABONADO     = :pConcTar->lNumAbonado
+                             AND  NUM_ALQUILER    = :pConcTar->lNumAlquiler
+                             AND  COD_OPERADOR    = :iCodTarificacion
+                             AND  COD_CLIENTE     = :stCliente.lCodCliente
+                             AND  NUM_PROCESO     = :iCero;
+
+    vDTrazasLog (szExeName,"\n\t\t* Parametros Entrada Ta_AcumOperAlq\n"
+                 "\t\t=> Num.Abonado      [%ld]\n"
+                 "\t\t=> Cod.Cliente      [%ld]\n"
+                 "\t\t=> Num.Alquiler     [%ld]\n"
+                 "\t\t=> Cod.Tarificacion [%d] \n",LOG04,
+                 pConcTar->lNumAbonado ,
+                 stCliente.lCodCliente ,
+                 pConcTar->lNumAlquiler,
+                 iCodTarificacion);
+
+    pConcTar->iCodOperador = iCodTarificacion;
+
+    EXEC SQL OPEN Cur_AcumOperAlq;
+
+    if( SQLCODE != SQLOK )
+    {
+        iDError (szExeName,ERR000,vInsertarIncidencia,
+                 "Open->Ta_AcumOperAlq",szfnORAerror());
+        return(FALSE);
+    }
+    while( SQLCODE == SQLOK )
+    {
+        dImpConsumido = 0.0;
+        lSegConsumido = 0  ;
+        lNumPulsos    = 0  ;
+
+        EXEC SQL FETCH Cur_AcumOperAlq INTO :dImpConsumido,
+        :lSegConsumido,
+        :lNumPulsos;
+        if( SQLCODE == SQLOK )
+        {
+            pConcTar->dImpConsumido += dImpConsumido;
+            pConcTar->lSegConsumido += lSegConsumido;
+            pConcTar->lNumPulsos    += lNumPulsos   ;
+        }
+    }
+    if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+    {
+        iDError (szExeName,ERR000,vInsertarIncidencia,
+                 "Fetch->Ta_AcumOperAlq",szfnORAerror());
+        return(FALSE);
+    }
+    EXEC SQL CLOSE Cur_AcumOperAlq;
+    if( SQLCODE != SQLOK )
+        iDError (szExeName,ERR000,vInsertarIncidencia,
+                 "Close->Ta_AcumOperAlq",szfnORAerror());
+
+    return(SQLCODE != SQLOK)?FALSE:TRUE;
+}/************************** Final bfnAcumOperAlq ***************************/
+
+/*****************************************************************************/
+/*                    funcion : bfnLeeAcumAireFraSocAlq                      */
+/* -Funcion que carga la informacion de consumos del Abonado y periodo en la */
+/*  la tabla Ta_AcumAireFraSocAlq.                                           */
+/* -Valores Retorno : Error->FALSE, !Error->TRUE                             */
+/*****************************************************************************/
+static BOOL bfnLeeAcumAireFraSocAlq (CONCTAR *pConcTar,
+                                     int      iCodTarificacion)
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+         int  iCero=0;
+    EXEC SQL END DECLARE SECTION;
+
+    static double dImpConsumido = 0.0;
+    static long   lSegConsumido = 0  ;
+
+    EXEC SQL DECLARE Cur_AcumAireAlq CURSOR FOR
+    SELECT /*+ index (TA_ACUMAIREFRASOCALQ PK_TA_ACUMAIREFRASOCALQ) */
+    IMP_CONSUMIDO,
+    SEG_CONSUMIDO
+    FROM   TA_ACUMAIREFRASOCALQ
+    WHERE  NUM_ABONADO     = :pConcTar->lNumAbonado
+                             AND  NUM_ALQUILER    = :pConcTar->lNumAlquiler
+                             AND  COD_FRANHORASOC = :iCodTarificacion
+                             AND  IND_ENTSAL      = :pConcTar->iIndEntSal
+                             AND  COD_CLIENTE     = :stCliente.lCodCliente
+                             AND  NUM_PROCESO     = :iCero;
+
+    vDTrazasLog (szExeName,"\n\t\t* Parametros Entrada Ta_AcumAireFraSocAlq\n"
+                 "\t\t=> Num.Abonado      [%ld]\n"
+                 "\t\t=> Cod.Cliente      [%ld]\n"
+                 "\t\t=> Num.Alquiler     [%ld]\n"
+                 "\t\t=> Ind.EntSal       [%d] \n"
+                 "\t\t=> Cod.Tarificacion [%d] \n",LOG04,
+                 pConcTar->lNumAbonado ,
+                 stCliente.lCodCliente ,
+                 pConcTar->lNumAlquiler,
+                 pConcTar->iIndEntSal  ,
+                 iCodTarificacion);
+
+    pConcTar->iCodFranHoraSoc = iCodTarificacion;
+
+    EXEC SQL OPEN Cur_AcumAireAlq;
+
+    if( SQLCODE != SQLOK )
+    {
+        iDError (szExeName,ERR000,vInsertarIncidencia,
+                 "Open->Ta_AcumAireFraSocAlq",szfnORAerror());
+        return(FALSE);
+    }
+    while( SQLCODE == SQLOK )
+    {
+        dImpConsumido = 0.0;
+        lSegConsumido = 0  ;
+
+        EXEC SQL FETCH Cur_AcumAireAlq INTO :dImpConsumido,
+        :lSegConsumido;
+        if( SQLCODE == SQLOK )
+        {
+            pConcTar->dImpConsumido += dImpConsumido;
+            pConcTar->lSegConsumido += lSegConsumido;
+        }
+    }
+    if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+    {
+        iDError (szExeName,ERR000,vInsertarIncidencia,
+                 "Fetch->Ta_AcumAireFraSocAlq",szfnORAerror());
+        return(FALSE);
+    }
+    EXEC SQL CLOSE Cur_AcumAireAlq;
+    if( SQLCODE != SQLOK )
+        iDError (szExeName,ERR000,vInsertarIncidencia,
+                 "Close->Ta_AcumAireFraSocAlq",szfnORAerror());
+
+    return(SQLCODE != SQLOK)?FALSE:TRUE;
+}/************************** Final bfnAcumAireFraSocAlq **********************/
+
+/*****************************************************************************/
+/*                        funcion : bfnLeeConceptoRentPhone                  */
+/* -Funcion que carga los Conceptos de Tarificacion para un Abonado          */
+/* -Valores Retorno : Error->FALSE, !Error->TRUE                             */
+/*****************************************************************************/
+static BOOL bfnLeeConceptosRentPhone (ABORENT *pAboRent)
+{
+    int  iCont = 0    ;
+
+    BOOL bRes  = TRUE ;
+
+    CONCTAR stConcTar ;
+    CONCTAR stConcTar2;
+    EST     stEstProc ;
+
+    memset (&stEstProc ,0,sizeof(EST))    ;
+
+    while( iCont<NUM_TACONCEPFACT && bRes )
+    {
+        if( pstTaConcepFact[iCont].iCodProducto==stDatosGener.iProdCelular &&
+            (pstTaConcepFact[iCont].iIndTabla   == FRASOC                   ||
+             pstTaConcepFact[iCont].iIndTabla   == ACUMOPER) )
+        {
+            memset (&stConcTar2,0,sizeof(CONCTAR));
+            memset (&stConcTar ,0,sizeof(CONCTAR));
+
+            stConcTar.iCodProducto    = stDatosGener.iProdCelular             ;
+            stConcTar.lNumAbonado     = pAboRent->lNumAbonado                 ;
+            stConcTar.lNumAlquiler    = pAboRent->lNumAlquiler                ;
+            stConcTar.iCodFacturacion = pstTaConcepFact[iCont].iCodFacturacion;
+            stConcTar.lNumProceso     = stStatus.IdPro                        ;
+            stConcTar.iIndTabla       = pstTaConcepFact[iCont].iIndTabla      ;
+            stConcTar.iIndEntSal      = pstTaConcepFact[iCont].iIndEntSal     ;
+
+            switch( pstTaConcepFact [iCont].iIndTabla )
+            {
+                case FRASOC  :
+                    bRes = bfnLeeAcumAireFraSocAlq (&stConcTar,
+                                                    pstTaConcepFact[iCont].iCodTarificacion);
+                    break;
+                case ACUMOPER:
+                    bRes = bfnLeeAcumOperAlq   (&stConcTar,
+                                                pstTaConcepFact[iCont].iCodTarificacion);
+                    break;
+                default :
+                    iDError (szExeName,ERR030,vInsertarIncidencia,
+                             pstTaConcepFact [iCont].iIndTabla);
+                    bRes = FALSE;
+                    break       ;
+            }
+            if( bRes && stConcTar.dImpConsumido >= 0.01 )
+            {
+                if( !bfnValidacionConcTar (&stConcTar) )
+                    bRes = FALSE;
+                else
+                {
+                    if( (pAboRent->pConcTar =
+                         (CONCTAR *)realloc ( (CONCTAR *)pAboRent->pConcTar,
+                                              sizeof(CONCTAR)*(pAboRent->iNumConcTar+1) ))
+                        == (CONCTAR *)NULL )
+                    {
+                        iDError (szExeName,ERR005,vInsertarIncidencia,
+                                 "pAboRent->pConcTar");
+                        return(FALSE                  );
+                    }
+                    memcpy (&pAboRent->pConcTar[pAboRent->iNumConcTar],
+                            &stConcTar,sizeof(CONCTAR));
+                    switch( pstTaConcepFact [iCont].iIndTabla )
+                    {
+                        case FRASOC  :
+                            if( stConcTar.iIndEntSal == iENTRANTE )
+                            {
+                                stEstProc.iNumConcLocalEnt++     ;
+                                stEstProc.dTotImpLocalEnt +=
+                                stConcTar.dImpConsumido;
+                            }
+                            else if( stConcTar.iIndEntSal == iSALIENTE )
+                            {
+                                stEstProc.iNumConcLocalSal++     ;
+                                stEstProc.dTotImpLocalSal +=
+                                stConcTar.dImpConsumido;
+                            }
+                            break;
+                        case ACUMOPER:
+                            stEstProc.iNumConcOper++         ;
+                            stEstProc.dTotImpOper +=
+                            stConcTar.dImpConsumido;
+                            break;
+                    }
+                    pAboRent->iNumConcTar++;
+
+                }/* fin else Validacion ... */
+
+            }/* fin if bRes ... */
+
+        }/* fin if Producto ... */
+        iCont++;
+
+    }/* fin While ... */
+    vDTrazasLog (szExeName,
+                 "\n\t\t* Estadisticas de Trafico para el Abonado :   [%ld]"
+                 "\n\t\t=>Conceptos Trafico Local Entrante            [%d]"
+                 "\n\t\t=>Importe Total Trafico Local Entrante(Pesos) [%f]"
+                 "\n\t\t=>Conceptos Trafico Local Saliente            [%d]"
+                 "\n\t\t=>Importe Total Trafico Local Saliente(Pesos) [%f]"
+                 "\n\t\t=>Conceptos Trafico Larga Distancia           [%d]"
+                 "\n\t\t=>Importe Total Trafico Larga Distancia(Pesos)[%f]",LOG04,
+                 pAboRent->lNumAbonado    , stEstProc.iNumConcLocalEnt,
+                 stEstProc.dTotImpLocalEnt, stEstProc.iNumConcLocalSal,
+                 stEstProc.dTotImpLocalSal, stEstProc.iNumConcOper    ,
+                 stEstProc.dTotImpOper);
+
+    return(bRes);
+}/*********************** Final bfnLeeConceptosRentPhone *********************/
+
+/*****************************************************************************/
+/*                       funcion : bfnLeeConceptsRoamingVis                  */
+/*****************************************************************************/
+static BOOL bfnLeeConceptosRoamingVis (ABOROAVIS *pRoa)
+{
+    CONCTAR stConcTar;
+    EST     stEstProc;
+
+    BOOL bRes = TRUE ;
+    int  iCont= 0    ;
+
+    memset (&stEstProc,0,sizeof(EST));
+
+    while( iCont<NUM_TACONCEPFACT && bRes )
+    {
+        if( pstTaConcepFact[iCont].iCodProducto     ==
+            stDatosGener.iProdCelular                     &&
+            pstTaConcepFact[iCont].iIndTabla        == 4  &&
+            (pstTaConcepFact[iCont].iCodTarificacion == 0  ||
+             pstTaConcepFact[iCont].iCodTarificacion == 1) )
+        {
+            memset (&stConcTar,0,sizeof(CONCTAR));
+
+            stConcTar.iCodProducto    = stDatosGener.iProdCelular             ;
+            stConcTar.lNumAbonado     = pRoa->lNumAbonado                     ;
+            stConcTar.lNumEstaDia     = pRoa->lNumEstaDia                     ;
+            stConcTar.iCodFacturacion = pstTaConcepFact[iCont].iCodFacturacion;
+            stConcTar.lNumProceso     = stStatus.IdPro                        ;
+            stConcTar.iIndTabla       = pstTaConcepFact[iCont].iIndTabla      ;
+
+            bRes = bfnLeeAcumRoaming (&stConcTar,
+                                      pstTaConcepFact[iCont].iCodTarificacion);
+
+            if( bRes && stConcTar.dImpConsumido >= 0.01 )
+            {
+                if( !bfnValidacionConcTar (&stConcTar) )
+                    bRes = FALSE;
+                else
+                {
+                    if( (pRoa->pConcTar =
+                         (CONCTAR *)realloc ( (CONCTAR *)pRoa->pConcTar,
+                                              sizeof(CONCTAR)*(pRoa->iNumConcTar+1) ))
+                        == (CONCTAR *)NULL )
+                    {
+                        iDError (szExeName,ERR005,vInsertarIncidencia,
+                                 "pAboRent->pConcTar");
+                        return(FALSE                  );
+                    }
+                    memcpy (&pRoa->pConcTar[pRoa->iNumConcTar],
+                            &stConcTar,sizeof(CONCTAR));
+                    stEstProc.iNumConcRoaming++        ;
+                    stEstProc.dTotImpRoaming +=
+                    stConcTar.dImpConsumido  ;
+                    pRoa->iNumConcTar++                ;
+                }
+
+            }/* fin if bRes ... */
+
+        }/* fin if Producto ... */
+        iCont++;
+
+    }/* fin While ... */
+    vDTrazasLog (szExeName,
+                 "\n\t\t* Estadisticas de Trafico para el Abonado :  [%ld]"
+                 "\n\t\t=>Conceptos Trafico Roaming                  [%d] "
+                 "\n\t\t=>Importe Total Trafico Roaming              [%f] ",LOG04,
+                 pRoa->lNumAbonado     ,stEstProc.iNumConcRoaming  ,
+                 stEstProc.dTotImpRoaming);
+    if( stEstProc.dTotImpRoaming <= 0.0 )
+    {
+        bRes = FALSE;
+
+        vDTrazasLog (szExeName,"\n\t* No Hay Conceptos a Facturar\n",LOG03);
+        iDError (szExeName,ERR039,vInsertarIncidencia);
+    }
+    return(bRes);
+}/************************ Final bfnLeeConceptosRoamingVis *******************/
+
+
+/*****************************************************************************/
+/*                         funcion : bLeeAcumFraSoc                          */
+/* -Funcion que carga la informacion de consumo de la tabla Ta_Acum%FraSoc   */
+/*  (Tarifas Locales).                                                       */
+/* -Valores Retorno: Error->FALSE, !Error->TRUE                              */
+/*****************************************************************************/
+static BOOL bfnLeeAcumFraSoc( CONCEP *pstConcep, long lNumAbonado,int iCodProducto)
+{
+    BOOL   bRes           = FALSE;
+    char   szNomTabla [20]= ""   ;
+    char   szOperaOra [40]= ""   ;
+
+    PLANTARIF  lstPlanTarif; /* estructura para info planes tarif */
+    EXEC SQL BEGIN DECLARE SECTION;
+    char szhRowid[19];
+    static long   lhCodCliente  =0 ;
+    static long   lhNumAbonado  =0 ;
+    static long   lhCodCiclFact    ;
+    static int    ihCodTarificacion;
+    static double dhImpConsumido   ;
+    static long   lhSegConsumido   ;
+    static short  shIndEntSal      ;
+    static short  shIndDestino     ;
+    char   szCodServicio[6]        ;EXEC SQL VAR szCodServicio     IS STRING(6);
+    char   szhCodPlanTarif[4]      ;EXEC SQL VAR szhCodPlanTarif   IS STRING(4);
+    char   szhCodTipRelacion[6]    ;EXEC SQL VAR szhCodTipRelacion IS STRING(6);
+    static short  shCodProducto    ;
+    static short  shValorCero      ;
+    static short  i_szhCodPlanTarif;
+    static int    ihCodOperador =0 ;
+    static int		ihValParametro; /* PGG - 193496 - 28-03-2013 */    
+    static char   szhTres[2];  /* PGG - 193496 - 28-03-2013 */  
+    EXEC SQL END DECLARE SECTION;
+
+	memset (&lstPlanTarif, 0, sizeof(PLANTARIF));
+
+    /* valores por defecto */
+    sprintf (szhCodTipRelacion, "%s\0", "4");
+    shCodProducto = 1;
+    shValorCero   = 0;
+	lhNumAbonado = lNumAbonado;
+	    strcpy(szhTres, "3"); /* PGG - 193496 - 28-03-2013 */
+	    
+    vDTrazasLog (szExeName,
+                 "\n\t\t* Parametros de Entrada Acumulados Trafico Local\n"
+                 "\n\t\t=> Cod.Cliente     [%ld]"
+                 "\n\t\t=> Num.Abonado     [%ld]"
+                 , LOG05, stCliente.lCodCliente, lhNumAbonado);
+
+   /*- Cursor para la suma de importes y segundos con las mismas condiciones -*/
+   /*  nuevo campo a leer COD_SERVICIO NCONTRER 26-04-2002            */
+/* PGG - 193496 - 28-03-2013 */     
+/*    EXEC SQL DECLARE Cur_AcumAire CURSOR FOR
+        SELECT  A.ROWID            ,
+                COD_CICLFACT     ,
+                IMP_CONSUMIDO    ,
+                SEG_CONSUMIDO    ,
+                IND_ENTSAL       ,
+                IND_DESTINO      ,
+                COD_FRANHORASOC  ,
+                A.COD_SERVICIO   ,
+                B.COD_PLANTARIF  ,
+                A.COD_OPERADOR
+          FROM  TA_ACUMAIREFRASOC  A, GAD_SERVSUP_PLAN B
+         WHERE  NUM_ABONADO     = :lhNumAbonado
+           AND  COD_CICLFACT    > :shValorCero
+           AND  COD_CLIENTE     = :lhCodCliente
+           AND  NUM_PROCESO     = :shValorCero
+           AND  B.COD_PRODUCTO  (+)= :shCodProducto
+           AND  B.COD_SERVICIO  (+)= A.COD_SERVICIO
+           AND  B.TIP_RELACION  (+)= :szhCodTipRelacion;
+
+    EXEC SQL DECLARE Cur_AcumAireLiq CURSOR FOR
+        SELECT  IMP_CONSUMIDO    ,
+                SEG_CONSUMIDO    ,
+                IND_ENTSAL       ,
+                IND_DESTINO      ,
+                COD_FRANHORASOC  ,
+                A.COD_SERVICIO   ,
+                B.COD_PLANTARIF  ,
+                A.COD_OPERADOR
+          FROM  TA_ACUMAIREFRASOC  A, GAD_SERVSUP_PLAN B
+         WHERE  NUM_ABONADO     = :lhNumAbonado
+           AND  COD_CLIENTE     = :lhCodCliente
+           AND  NUM_PROCESO     = :shValorCero
+           AND  B.COD_PRODUCTO  (+)= :shCodProducto
+           AND  B.COD_SERVICIO  (+)= A.COD_SERVICIO
+           AND  B.TIP_RELACION  (+)= :szhCodTipRelacion;
+*/
+
+/* INICIO PGG - 193496 - 28-03-2013 */  
+    EXEC SQL DECLARE Cur_AcumAire CURSOR FOR
+        SELECT  A.ROWID            ,
+                COD_CICLFACT     ,
+                IMP_CONSUMIDO    ,
+                SEG_CONSUMIDO    ,
+                IND_ENTSAL       ,
+                IND_DESTINO      ,
+                COD_FRANHORASOC  ,
+                A.COD_SERVICIO   ,
+                B.COD_PLANTARIF  ,
+                A.COD_OPERADOR   ,
+                C.VAL_PARAMETRO
+          FROM  TA_ACUMAIREFRASOC  A, GAD_SERVSUP_PLAN B, GED_PARAMETROS C
+         WHERE  NUM_ABONADO     = :lhNumAbonado
+           AND  COD_CICLFACT    > :shValorCero
+           AND  COD_CLIENTE     = :lhCodCliente
+           AND  NUM_PROCESO     = :shValorCero
+           AND  B.COD_PRODUCTO  (+)= :shCodProducto
+           AND  B.COD_SERVICIO  (+)= A.COD_SERVICIO
+           AND  B.TIP_RELACION  (+)= :szhCodTipRelacion
+           AND  C.NOM_PARAMETRO = :szhTres; /* PGG - 193496 - 28-03-2013 */  
+
+    EXEC SQL DECLARE Cur_AcumAireLiq CURSOR FOR
+        SELECT  IMP_CONSUMIDO    ,
+                SEG_CONSUMIDO    ,
+                IND_ENTSAL       ,
+                IND_DESTINO      ,
+                COD_FRANHORASOC  ,
+                A.COD_SERVICIO   ,
+                B.COD_PLANTARIF  ,
+                A.COD_OPERADOR   ,
+                C.VAL_PARAMETRO
+          FROM  TA_ACUMAIREFRASOC  A, GAD_SERVSUP_PLAN B, GED_PARAMETROS C
+         WHERE  NUM_ABONADO     = :lhNumAbonado
+           AND  COD_CLIENTE     = :lhCodCliente
+           AND  NUM_PROCESO     = :shValorCero
+           AND  B.COD_PRODUCTO  (+)= :shCodProducto
+           AND  B.COD_SERVICIO  (+)= A.COD_SERVICIO
+           AND  B.TIP_RELACION  (+)= :szhCodTipRelacion
+           AND  C.NOM_PARAMETRO = :szhTres; /* PGG - 193496 - 28-03-2013 */  
+/* FIN PGG - 193496 - 28-03-2013 */             	
+           	
+           	
+           	
+           	
+
+
+
+    lhCodCliente      = stCliente.lCodCliente;
+    lhNumAbonado      = lNumAbonado          ;
+    lhCodCiclFact     = 0                    ;
+    dhImpConsumido    = 0.0                  ;
+    lhSegConsumido    = 0                    ;
+
+    sprintf (szOperaOra, "Open->");
+
+    if( stProceso.iCodTipDocum == stDatosGener.iCodLiquidacion )
+        EXEC SQL OPEN Cur_AcumAireLiq;
+    else
+        EXEC SQL OPEN Cur_AcumAire;
+
+    strcpy (szNomTabla,"Ta_AcumAireFraSoc");
+    bRes = TRUE;
+
+    if( !bRes )
+    {
+        iDError (szExeName,ERR003,vInsertarIncidencia,
+                 iCodProducto);
+        return(FALSE);
+    }
+    if( SQLCODE )
+    {
+        strcat (szOperaOra,szNomTabla);
+        iDError (szExeName,ERR000,vInsertarIncidencia,szOperaOra,
+                 szfnORAerror());
+        return(FALSE);
+    }
+    strcpy (szOperaOra,"Fetch->") ;
+    strcat (szOperaOra,szNomTabla);
+
+    while( SQLCODE == SQLOK )
+    {
+        if( stProceso.iCodTipDocum == stDatosGener.iCodLiquidacion )
+            EXEC SQL FETCH Cur_AcumAireLiq INTO :dhImpConsumido ,
+            :lhSegConsumido ,
+            :shIndEntSal    ,
+            :shIndDestino   ,
+            :ihCodTarificacion,
+            :szCodServicio  ,
+            :szhCodPlanTarif :i_szhCodPlanTarif,
+            :ihCodOperador,
+            :ihValParametro; /* PGG - 193496 - 28-03-2013 */  
+        else
+            EXEC SQL FETCH Cur_AcumAire INTO :szhRowid      ,    :lhCodCiclFact,
+            :dhImpConsumido,    :lhSegConsumido,
+            :shIndEntSal   ,    :shIndDestino,
+            :ihCodTarificacion, :szCodServicio,
+            :szhCodPlanTarif :i_szhCodPlanTarif,
+            :ihCodOperador,
+            :ihValParametro; /* PGG - 193496 - 28-03-2013 */  
+
+        if( SQLCODE == SQLOK )
+        {
+            if( bBusca_Ciclo(lhCodCiclFact))
+            {
+			    vDTrazasLog (szExeName,"szhCodPlanTarif [%s]", LOG05,szhCodPlanTarif);
+            	if (i_szhCodPlanTarif == ORA_NULL ||(strcmp (szhCodPlanTarif, " ")==0))
+            	{
+					vDTrazasLog (szExeName,"no viene Plan tarif", LOG05);
+
+            		if (!bBuscaPlanTarifAbon (lNumAbonado,szhCodPlanTarif))
+            		{
+            			iDError (szExeName,ERR000,vInsertarIncidencia,"Busca Plan Tarif Abonado",
+                             szfnORAerror ());
+                    	return (FALSE);
+            		}
+            	}
+
+                if (!bFindPlanTarif (1, szhCodPlanTarif, &lstPlanTarif))
+                {
+                    iDError (szExeName,ERR000,vInsertarIncidencia,"Select=> Ta_PlanTarif",
+                             szfnORAerror ());
+                    return (FALSE);
+                }
+
+                /* Busca codigo de tarificacion */
+                if( bfnBuscaAcumCodTarif(pstConcep, lNumAbonado, ihCodTarificacion,
+                                         lhSegConsumido, dhImpConsumido, 0, shIndEntSal,shIndDestino, 1,
+                                         szCodServicio, szhCodPlanTarif, lstPlanTarif.szCod_Unidad, lstPlanTarif.lNumUnidades,ihCodOperador, ihValParametro) )
+                {
+                    EXEC SQL UPDATE TA_ACUMAIREFRASOC
+                    SET NUM_PROCESO = :stStatus.IdPro
+                                      WHERE ROWID = :szhRowid;
+                }
+            }
+        }
+    }/* fin while */
+    if( SQLCODE != 0 && SQLCODE != SQLNOTFOUND )
+    {
+        iDError(szExeName,ERR000,vInsertarIncidencia,szOperaOra,szfnORAerror());
+        return(FALSE);
+    }
+    if( stProceso.iCodTipDocum == stDatosGener.iCodLiquidacion )
+    {
+        EXEC SQL CLOSE Cur_AcumAireLiq;
+    }
+    else
+    {
+        EXEC SQL CLOSE Cur_AcumAire;
+    }
+    strcpy (szOperaOra,szNomTabla);
+
+    if( SQLCODE != 0 )
+        iDError (szExeName,ERR000,vInsertarIncidencia,
+                 szOperaOra,szfnORAerror());
+    return(SQLCODE != 0)?FALSE:TRUE;
+}/************************* Final bLeeAcumFraSoc *****************************/
+
+/*****************************************************************************/
+/*                        funcion : bLeeAcumOper                             */
+/* -Funcion que carga los importes , segundos y pulsos de las llamadas de    */
+/*  larga distancia (Ta_AcumOper).                                           */
+/* -Valores Retorno : Error->FALSE,!Error->TRUE                              */
+/*****************************************************************************/
+static BOOL bfnLeeAcumOper (CONCEP *pstConcep, long lNumAbonado)
+{
+    PLANTARIF  lstPlanTarif; /* estructura para info planes tarif */
+    char          szCodServicio[6] ;
+    OPERSERVESP lstOperServEsp ; /* estructura para info Operadores Esp. */
+    char          szCodUnidad[6] ;
+    EXEC SQL BEGIN DECLARE SECTION;
+    char szhRowid[19];
+    static long   lhCodCliente     ;
+    static long   lhNumAbonado     ;
+    static long   lhCodCiclFact    ;
+    static double dhImpConsumido   ;
+    static long   lhSegConsumido   ;
+    static long   lhNumPulsos      ;
+    static int    ihCodOperador    ;
+    char          szhCodPlanTarif[4] ;EXEC SQL VAR szhCodPlanTarif IS STRING(4);
+    static int		ihValParametro; /* PGG - 193496 - 28-03-2013 */
+    static short  i_szhCodPlanTarif;
+    static long   lhValorCero	   ;
+    static char   szhTres[2];  /* PGG - 193496 - 28-03-2013 */  
+    EXEC SQL END DECLARE SECTION;
+
+	memset (&lstPlanTarif, 0, sizeof(PLANTARIF));
+
+    vDTrazasLog (szExeName,
+                 "\n\t\t* Parametros de Entrada Acumulados Larga Distancia"
+                 "\n\t\t=> Cod.Cliente     [%ld]"
+                 "\n\t\t=> Num.Abonado     [%ld]"
+                 ,LOG05,stCliente.lCodCliente, lNumAbonado);
+
+    strcpy(szCodServicio, " ");
+    strcpy(szhTres, "3"); /* PGG - 193496 - 28-03-2013 */
+
+/*    EXEC SQL DECLARE Cur_AcumOperLiq CURSOR FOR
+        SELECT + index (TA_ACUMOPER PK_TA_ACUMOPER) 
+               IMP_CONSUMIDO, SEG_CONSUMIDO, NUM_PULSOS, COD_OPERADOR, TRIM(COD_PLANTARIF)
+          FROM  TA_ACUMOPER
+         WHERE  NUM_ABONADO   = :lhNumAbonado
+           AND  COD_CLIENTE   = :lhCodCliente
+           AND  NUM_PROCESO   = :lhValorCero;
+*/ /* PGG - 193496 - 28-03-2013 */
+
+/* INICIO PGG - 193496 - 28-03-2013 */
+    EXEC SQL DECLARE Cur_AcumOperLiq CURSOR FOR
+        SELECT /*+ index (TA_ACUMOPER PK_TA_ACUMOPER) */
+               A.IMP_CONSUMIDO, A.SEG_CONSUMIDO, A.NUM_PULSOS, A.COD_OPERADOR, TRIM(A.COD_PLANTARIF), B.VAL_PARAMETRO
+          FROM  TA_ACUMOPER A, GED_PARAMETROS B
+         WHERE  A.NUM_ABONADO   = :lhNumAbonado
+           AND  A.COD_CLIENTE   = :lhCodCliente
+           AND  A.NUM_PROCESO   = :lhValorCero
+           AND  B.NOM_PARAMETRO = :szhTres;
+/* FIN PGG - 193496 - 28-03-2013 */
+
+    /*- Cursor para la suma de importes,segundos y pulsos -*/
+/*    EXEC SQL DECLARE Cur_AcumOper CURSOR FOR
+        SELECT + index (TA_ACUMOPER PK_TA_ACUMOPER)
+                ROWID, COD_CICLFACT, IMP_CONSUMIDO, SEG_CONSUMIDO, AFGS - 79605
+                ROWID, COD_CICLFACT, IMP_CONSUMIDO, DECODE(SEG_ADICIONALES,0, SEG_CONSUMIDO, SEG_ADICIONALES) AS SEG_CONSUMIDO,
+                NUM_PULSOS, COD_OPERADOR, TRIM(COD_PLANTARIF)
+          FROM  TA_ACUMOPER
+         WHERE  NUM_ABONADO   = :lhNumAbonado
+           AND  COD_CICLFACT  > :lhValorCero
+           AND  COD_CLIENTE   = :lhCodCliente
+           AND  NUM_PROCESO   = :lhValorCero;
+*/ /*  PGG - 193496 - 28-03-2013 */
+
+/* INICIO PGG - 193496 - 28-03-2013 */
+    EXEC SQL DECLARE Cur_AcumOper CURSOR FOR
+        SELECT /*+ index (TA_ACUMOPER PK_TA_ACUMOPER) */
+                A.ROWID, A.COD_CICLFACT, A.IMP_CONSUMIDO, DECODE(A.SEG_ADICIONALES,0, A.SEG_CONSUMIDO, A.SEG_ADICIONALES) AS SEG_CONSUMIDO,
+                A.NUM_PULSOS, A.COD_OPERADOR, TRIM(A.COD_PLANTARIF), B.VAL_PARAMETRO
+          FROM  TA_ACUMOPER A,  GED_PARAMETROS B
+         WHERE  A.NUM_ABONADO   = :lhNumAbonado
+           AND  A.COD_CICLFACT  > :lhValorCero
+           AND  A.COD_CLIENTE   = :lhCodCliente
+           AND  A.NUM_PROCESO   = :lhValorCero
+           AND  B.NOM_PARAMETRO = :szhTres;
+/* FIN PGG - 193496 - 28-03-2013 */           	
+
+    lhCodCliente      = stCliente.lCodCliente;
+    lhNumAbonado      = lNumAbonado          ;
+    dhImpConsumido    = 0.0                  ;
+    lhSegConsumido    = 0                    ;
+    lhNumPulsos       = 0                    ;
+		lhValorCero		  = 0					 ;
+    if( stProceso.iCodTipDocum == stDatosGener.iCodLiquidacion )
+    {
+        EXEC SQL OPEN Cur_AcumOperLiq;
+    }
+    else
+    {
+        EXEC SQL OPEN Cur_AcumOper   ;
+    }
+    if( SQLCODE )
+    {
+        iDError (szExeName,ERR000,vInsertarIncidencia,"Open->Ta_AcumOper",
+                 szfnORAerror());
+        return(FALSE);
+    }
+    while( SQLCODE == 0 )
+    {
+
+        if( stProceso.iCodTipDocum == stDatosGener.iCodLiquidacion )
+        {
+		     /*CMD -- inc. 189483 TRAZADOR*/
+	       vDTrazasLog (szExeName,
+                 "\n\t\t*EXEC SQL FETCH Cur_AcumOperLiq"
+                 ,LOG05);
+	    /*HASTA AQUI*/
+
+            EXEC SQL FETCH Cur_AcumOperLiq
+            INTO :dhImpConsumido, :lhSegConsumido,
+                 :lhNumPulsos   , :ihCodOperador, :szhCodPlanTarif :i_szhCodPlanTarif, :ihValParametro;
+        }
+        else
+        {
+		    /*CMD -- inc. 189483 TRAZADOR*/
+	       vDTrazasLog (szExeName,
+                 "\n\t\t*EXEC SQL FETCH Cur_AcumOper"
+                 ,LOG05);
+	       /*HASTA AQUI*/
+
+            EXEC SQL FETCH Cur_AcumOper
+            INTO :szhRowid, :lhCodCiclFact, :dhImpConsumido,
+                 :lhSegConsumido, :lhNumPulsos  , :ihCodOperador, :szhCodPlanTarif :i_szhCodPlanTarif, :ihValParametro;
+        }
+        if( SQLCODE == 0 )
+        {
+            if( bBusca_Ciclo(lhCodCiclFact))
+            {
+			    vDTrazasLog (szExeName,"szhCodPlanTarif [%s]", LOG05,szhCodPlanTarif);
+            	if (i_szhCodPlanTarif == ORA_NULL ||(strcmp (szhCodPlanTarif, " ")==0))
+            	{
+            		if (!bBuscaPlanTarifAbon (lNumAbonado,szhCodPlanTarif))
+            		{
+            			iDError (szExeName,ERR000,vInsertarIncidencia,"Busca Plan Tarif Abonado",
+                             szfnORAerror ());
+                    	return (FALSE);
+            		}
+            	}
+                if (!bfnFindOperServEsp (ihCodOperador, &lstOperServEsp))
+                {
+                	sprintf (szCodUnidad, "T"); /* default es voz */
+                }
+                else
+                {
+        			strcpy (szCodUnidad, lstOperServEsp.szCodUnidad);
+				}
+
+                if (!bFindPlanTarif (1, szhCodPlanTarif, &lstPlanTarif))
+                {
+                    iDError (szExeName,ERR000,vInsertarIncidencia,"Select=> Ta_PlanTarif",
+                             szfnORAerror ());
+                    return (FALSE);
+                }
+
+                if (bfnBuscaAcumCodTarif (pstConcep, lNumAbonado, ihCodOperador
+                                      	, lhSegConsumido, dhImpConsumido
+                                      	, lhNumPulsos, 0, 0, 2, szCodServicio
+                                      	, szhCodPlanTarif, szCodUnidad
+                                      	, lstPlanTarif.lNumUnidades, ihCodOperador, ihValParametro))
+				{
+				  /*CMD -- inc. 189483 TRAZADOR*/
+	               vDTrazasLog (szExeName,
+                     "\n\t\t*HARA EL UPDATE a TA_ACUMOPER"
+                    ,LOG03);
+	                /*HASTA AQUI*/
+
+	                EXEC SQL UPDATE TA_ACUMOPER
+    	            SET NUM_PROCESO = :stStatus.IdPro
+        	        WHERE ROWID       = :szhRowid;
+				}
+            }
+        }
+    }/* fin while */
+    if( SQLCODE != 0 && SQLCODE != SQLNOTFOUND )
+    {
+        iDError (szExeName,ERR000,vInsertarIncidencia,"Fetch->Ta_AcumOper",
+                 szfnORAerror());
+        return(FALSE);
+    }
+    if( stProceso.iCodTipDocum == stDatosGener.iCodLiquidacion )
+    {
+        EXEC SQL CLOSE Cur_AcumOperLiq;
+    }
+    else
+    {
+        EXEC SQL CLOSE Cur_AcumOper   ;
+    }
+    if( SQLCODE != 0 )
+        iDError (szExeName,ERR000,vInsertarIncidencia,"Close->Ta_AcumOper",
+                 szfnORAerror());
+    return(SQLCODE != 0)?FALSE:TRUE;
+}/*********************** Final bLeeAcumOper *********************************/
+
+/*****************************************************************************/
+/*                      funcion : bLeeAcumLlamadasRoa                        */
+/* -Funcion que carga importes y segundos de la tabla Ta_AcumLlamadasRoa     */
+/* -Valores Retorno : Error->FALSE,!Error->TRUE                              */
+/*****************************************************************************/
+static BOOL bfnLeeAcumLlamadasRoa (CONCEP *pstConcep, long lNumAbonado)
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+    char szhRowid[19];
+    static long   lhCodCliente     ;
+    static long   lhNumAbonado     ;
+    static long   lhCodCiclFact    ;
+    static int    ihCodTarificacion;
+    static double dhImpConsumido   ;
+    static long   lhSegConsumido   ;
+    static long   lhValorCero	   ;
+    static int		ihValParametro; /* PGG - 193496 - 28-03-2013 */    
+    static char   szhTres[2];  /* PGG - 193496 - 28-03-2013 */  
+    EXEC SQL END DECLARE SECTION;
+    char    szCodServicio[6]       ;
+
+    static double dImpConsumido   = 0.0 ;
+	strcpy(szCodServicio, " "); /* se fuerza el codigo de servicio = " "*/
+	    strcpy(szhTres, "3"); /* PGG - 193496 - 28-03-2013 */
+
+    vDTrazasLog (szExeName,
+                 "\n\t\t* Parametros de Entrada Ta_AcumLlamadasRoa\n"
+                 "\n\t\t=> Cod.Cliente [%ld]"
+                 "\n\t\t=> Num.Abonado [%ld]",LOG05,
+                 stCliente.lCodCliente, lNumAbonado);
+
+   /*- Cursor para la suma de importes,segundos y pulsos -*/
+/*    EXEC SQL DECLARE Cur_AcumLlamadas CURSOR FOR
+    	SELECT ROWID, COD_CICLFACT, IMP_CONSUMIDO, SEG_CONSUMIDO, COD_OPERADOR
+    	  FROM TA_ACUMLLAMADASROA
+    	 WHERE NUM_ABONADO   = :lhNumAbonado
+           AND COD_CICLFACT  > :lhValorCero
+           AND COD_CLIENTE   = :lhCodCliente
+           AND NUM_PROCESO   = :lhValorCero;
+*/ /* PGG - 193496 - 28-03-2013 */  
+
+/* INICIO PGG - 193496 - 28-03-2013 */  
+    EXEC SQL DECLARE Cur_AcumLlamadas CURSOR FOR
+    	SELECT A.ROWID, A.COD_CICLFACT, A.IMP_CONSUMIDO, A.SEG_CONSUMIDO, A.COD_OPERADOR, B.VAL_PARAMETRO
+    	  FROM TA_ACUMLLAMADASROA A, GED_PARAMETROS B
+    	 WHERE A.NUM_ABONADO   = :lhNumAbonado
+           AND A.COD_CICLFACT  > :lhValorCero
+           AND A.COD_CLIENTE   = :lhCodCliente
+           AND A.NUM_PROCESO   = :lhValorCero
+           AND B.NOM_PARAMETRO = :szhTres;
+/* FIN PGG - 193496 - 28-03-2013 */  
+
+
+/*           	
+    EXEC SQL DECLARE Cur_AcumLlamadasLiq CURSOR FOR
+     	SELECT + index (TA_ACUMLLAMADASROA PK_TA_ACUMLLAMADASROA) 
+    			IMP_CONSUMIDO,SEG_CONSUMIDO, COD_OPERADOR
+    	  FROM TA_ACUMLLAMADASROA
+    	 WHERE NUM_ABONADO   = :lhNumAbonado
+           AND COD_CLIENTE   = :lhCodCliente
+           AND NUM_PROCESO   = :lhValorCero;
+*//* PGG - 193496 - 28-03-2013 */  
+
+/* INICIO PGG - 193496 - 28-03-2013 */  
+    EXEC SQL DECLARE Cur_AcumLlamadasLiq CURSOR FOR
+     	SELECT /*+ index (TA_ACUMLLAMADASROA PK_TA_ACUMLLAMADASROA) */
+    			A.IMP_CONSUMIDO, A.SEG_CONSUMIDO, A.COD_OPERADOR, B.VAL_PARAMETRO
+    	  FROM TA_ACUMLLAMADASROA A, GED_PARAMETROS B
+    	 WHERE A.NUM_ABONADO   = :lhNumAbonado
+           AND A.COD_CLIENTE   = :lhCodCliente
+           AND A.NUM_PROCESO   = :lhValorCero
+           AND B.NOM_PARAMETRO = :szhTres;
+
+/* FIN PGG - 193496 - 28-03-2013 */  
+
+           	
+
+    lhCodCliente      = stCliente.lCodCliente;
+    lhNumAbonado      = lNumAbonado;
+    dhImpConsumido    = 0.0                  ;
+    lhSegConsumido    = 0                    ;
+		lhValorCero 	  = 0					 ;
+
+    if( stProceso.iCodTipDocum == stDatosGener.iCodLiquidacion )
+    {
+        EXEC SQL OPEN Cur_AcumLlamadasLiq;
+    }
+    else
+    {
+        EXEC SQL OPEN Cur_AcumLlamadas   ;
+    }
+    if( SQLCODE )
+    {
+        iDError (szExeName,ERR000,vInsertarIncidencia,"Open->Ta_AcumLlamadasRoa",
+                 szfnORAerror());
+        return(FALSE);
+    }
+    while( SQLCODE == 0 )
+    {
+        if( stProceso.iCodTipDocum == stDatosGener.iCodLiquidacion )
+        {
+            EXEC SQL FETCH Cur_AcumLlamadasLiq
+            INTO :dhImpConsumido,
+            :lhSegConsumido,
+            :ihCodTarificacion,
+            :ihValParametro;
+        }
+        else
+        {
+            EXEC SQL FETCH Cur_AcumLlamadas
+            INTO :szhRowid, :lhCodCiclFact,
+            :dhImpConsumido, :lhSegConsumido,
+            :ihCodTarificacion,
+            :ihValParametro;
+        }
+        if( SQLCODE == 0 )
+        {
+            /*  Conversion de Dolar a Peso de Llamadas Roaming */
+            /***************************************************/
+            dImpConsumido = 0.0;
+            if( dhImpConsumido > 0.0 )                /*  Tiene Trafico Roaming  */
+            {
+                if( !bConverMoneda (stDatosGener.szCodDollar   ,
+                                    stDatosGener.szCodMoneFact ,
+                                    stCiclo.szFecEmision       ,
+                                    &dhImpConsumido             ,
+                                    stProceso.iCodTipDocum) )
+
+                    return(FALSE);
+
+                dImpConsumido = fnCnvDouble( dhImpConsumido , USOFACT);
+            }
+            if( bBusca_Ciclo(lhCodCiclFact))
+            {
+                if( bfnBuscaAcumCodTarif(pstConcep, lNumAbonado,
+                                         ihCodTarificacion, lhSegConsumido,
+                                         dImpConsumido, 0, 0, 0,3,szCodServicio, " ", " ", 0,ihCodTarificacion, ihValParametro) )
+                {
+                    EXEC SQL UPDATE TA_ACUMLLAMADASROA
+                    SET NUM_PROCESO = :stStatus.IdPro
+                                      WHERE ROWID = :szhRowid;
+                }
+            }
+        }
+    }/* fin while */
+
+    if( SQLCODE != 0 && SQLCODE != SQLNOTFOUND )
+    {
+        iDError (szExeName,ERR000,vInsertarIncidencia,
+                 "Fetch->Ta_AcumLlamadasRoa",szfnORAerror());
+        return(FALSE);
+    }
+
+
+    if( stProceso.iCodTipDocum == stDatosGener.iCodLiquidacion )
+    {
+        EXEC SQL CLOSE Cur_AcumLlamadasLiq;
+    }
+    else
+    {
+        EXEC SQL CLOSE Cur_AcumLlamadas   ;
+    }
+    if( SQLCODE != 0 )
+        iDError (szExeName,ERR000,vInsertarIncidencia,
+                 "Close->Ta_AcumLlamadasRoa",szfnORAerror());
+
+    vDTrazasLog (szExeName,
+                 "\n\t\t* Salida de bfnLeeAcumLlamadasRoa\n"
+                 "\n\t\t=> Cod.Cliente [%ld]"
+                 "\n\t\t=> Cod.CiclFact[%ld]"
+                 "\n\t\t=> Num.Abonado [%ld]"
+                 ,LOG05, stCliente.lCodCliente
+                 ,stCiclo.lCodCiclFact, lNumAbonado );
+
+    return(SQLCODE != 0)?FALSE:TRUE;
+}/**************************** bfnLeeAcumLlamadasRoa *************************/
+
+/*****************************************************************************/
+/*                      funcion : bfnLeeAcumRoaming                          */
+/* -Funcion que acumula los Importes (Local y Larga Distancia) y segundos de */
+/*  Roaming Visitante.                                                       */
+/* -Valores Retorno : Error->FALSE, !Error->TRUE                             */
+/*****************************************************************************/
+static int bfnLeeAcumRoaming (CONCTAR *pConcTar,
+                          int      iCodTarificacion)
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+    static long   lhNumAbonado ;
+    static long   lhNumEstaDia ;
+    static long   lhSegConsAire;
+    static long   lhSegConsOper;
+    static double dhImpConsAire;
+    static double dhImpConsOper;
+    EXEC SQL END DECLARE SECTION;
+
+    EXEC SQL DECLARE Cur_Roa CURSOR FOR
+    SELECT /*+ index (TA_ACUMROAMING PK_TA_ACUMROAMING) */
+    IMP_CONSAIRE,
+    IMP_CONSOPER,
+    SEG_CONSAIRE,
+    SEG_CONSOPER
+    FROM   TA_ACUMROAMING
+    WHERE  NUM_ABONADO = :lhNumAbonado
+                         AND  NUM_ESTADIA = :lhNumEstaDia
+                         AND  NUM_PROCESO = 0;
+
+    vDTrazasLog (szExeName,"\n\t\t* Parametros de Entrada Ta_AcumRoaming"
+                 "\n\t\t=> Num.Abonado      [%ld]"
+                 "\n\t\t=> Num.EstaDia      [%ld]",LOG05,
+                 pConcTar->lNumAbonado,pConcTar->lNumEstaDia);
+
+    lhNumAbonado = pConcTar->lNumAbonado;
+    lhNumEstaDia = pConcTar->lNumEstaDia;
+
+    EXEC SQL OPEN Cur_Roa;
+    if( SQLCODE )
+    {
+        iDError (szExeName,ERR000,vInsertarIncidencia,"Open->Ta_AcumRoaming",
+                 szfnORAerror());
+        return(FALSE          );
+    }
+    while( SQLCODE == SQLOK )
+    {
+        dhImpConsAire = 0.0;
+        dhImpConsOper = 0.0;
+        lhSegConsAire = 0  ;
+        lhSegConsOper = 0  ;
+
+        EXEC SQL FETCH Cur_Roa INTO :dhImpConsAire,
+        :dhImpConsOper,
+        :lhSegConsAire,
+        :lhSegConsOper;
+
+        if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+        {
+            iDError (szExeName,ERR000,vInsertarIncidencia,
+                     "Fetch->Ta_AcumRoaming",szfnORAerror());
+            return(FALSE                                   );
+        }
+        else
+        {
+            if( SQLCODE == SQLOK )
+            {
+			    /*CMD - TRAZADOR - 189483*/
+		         vDTrazasLog (szExeName,"\n\t\t*VARIABLES RESCATADAS"
+                 "\n\t\t=> Num.Abonado      [%ld]"
+                 "\n\t\t=> dhImpConsAire    [%ld]"
+				 "\n\t\t=> dhImpConsOper    [%ld]",LOG05,
+                 pConcTar->lNumAbonado,dhImpConsAire,dhImpConsOper);
+		         /* HASTA AQUI */
+
+                /* Llamadas Locales */
+                if( iCodTarificacion == 0 )
+                {
+                    pConcTar->dImpConsumido += dhImpConsAire;
+                    pConcTar->lSegConsumido += lhSegConsAire;
+                }
+                /* Llamadas Larga Distancia */
+                else if( iCodTarificacion == 1 )
+                {
+                    pConcTar->dImpConsumido += dhImpConsOper;
+                    pConcTar->lSegConsumido += lhSegConsOper;
+                }
+
+            }
+        }
+    }/* fin while */
+
+    if( SQLCODE == SQLNOTFOUND )
+    {
+        if( !bConverMoneda (stDatosGener.szCodDollar   ,
+                            stDatosGener.szCodMoneFact ,
+                            stCiclo.szFecEmision       ,
+                            &pConcTar->dImpConsumido   ,
+                            stProceso.iCodTipDocum) )
+            return(FALSE);
+
+        pConcTar->dImpConsumido = fnCnvDouble( pConcTar->dImpConsumido,USOFACT);
+        EXEC SQL CLOSE Cur_Roa;
+        if( SQLCODE )
+        {
+            iDError (szExeName,ERR000,vInsertarIncidencia,
+                     "Close->Fa_AcumRoaming",szfnORAerror());
+            return(FALSE                                  );
+        }
+    }
+    return(1);
+}/************************ Final bfnLeeAcumRoaming ***************************/
+
+/*****************************************************************************/
+/*                        funcion : bEscribeAnoTar                           */
+/*****************************************************************************/
+static BOOL bfnEscribeAnoTar(CONCTAR *pReg)
+{
+    stAnomProceso.lNumProceso  = stStatus.IdPro        ;
+    stAnomProceso.lCodCliente  = stCliente.lCodCliente ;
+    stAnomProceso.iCodConcepto =  pReg->iCodFacturacion;
+    stAnomProceso.lCodCiclFact = stCiclo.lCodCiclFact  ;
+    stAnomProceso.iCodProducto = pReg->iCodProducto    ;
+
+    strcpy (stAnomProceso.szDesProceso,"PreBilling de Tarificacion");
+
+    return(1);
+}/************************* Final bEscribeAnoTar ****************************/
+
+/*-------------------------------------------------------------------------- */
+/*  bEMTarificacion (void)                                                   */
+/*     Observacion    : La aplicacion de Plan Optimo solo ocurre en la Factu-*/
+/*         racion de Ciclo y solo si el Plan Tarifario del Abonado coincide  */
+/*         con el Plan Tarifario (Optimo) de Fa_DatosGener, ademas de depen- */
+/*         de los minutos  Consumidos.                                       */
+/*     Valores Retorno: FALSE - Error                                        */
+/*                      TRUE  - Ningun Error                                 */
+/*-------------------------------------------------------------------------- */
+BOOL bfnEMTarificacion (int iTipoFact)
+{
+    int    iInd1         = 0    ;
+    int    iInd2         = 0    ;
+    int    i             = 0    ;
+    int    iCarrier      = 0    ;
+    int    iNumAbonados  = 0    ;
+    int    iNumConcTar   = 0    ;
+    BOOL   bError        = FALSE;
+    double dTotMinLocales= 0    ; /* Minutos Consumidos en Llamadas Locales */
+
+    ABORENT   *pTmpAboRent   = (ABORENT   *)NULL;
+    ABONTAR   *pTmpAbon      = (ABONTAR   *)NULL;
+    ABOROAVIS *pTmpAboRoaVis = (ABOROAVIS *)NULL;
+    CONCTAR   *pTmpConcTar   = (CONCTAR   *)NULL;
+
+    if( iTipoFact != FACT_ROAMINGVIS && iTipoFact != FACT_RENTAPHONE )
+    {
+        vDTrazasLog (szExeName,
+                     "\n\t\t* Paso a Prefactura TARIFICACION \n"
+                     "\t\t=> Cliente        [%ld]\n"
+                     "\t\t=> Ciclo Factura  [%ld]\n"
+                     "\t\t=> Numero Abonados[%d] \n",LOG05,stCliente.lCodCliente,
+                     stCiclo.lCodCiclFact,stCliente.iNumAbonados);
+        iNumAbonados = stCliente.iNumAbonados;
+
+        if( iTipoFact == FACT_CICLO && (!strcmp (stCliente.szTipPlanTarif,"E") ||
+                                        !strcmp (stCliente.szTipPlanTarif,"H") ) )
+            dTotMinLocales = (double)stPlanOptimo.lSegTotLocal/60;
+    }
+    else if( iTipoFact == FACT_RENTAPHONE )
+    {
+        vDTrazasLog (szExeName,
+                     "\n\t\t* Paso a PreFactura TRAFICO Local y Larga Distancia"
+                     "\n\t\t=> Cod.Cliente [%ld]"
+                     "\n\t\t=> Num.Abonado [%ld]"
+                     "\n\t\t=> Num.Alquiler[%ld]",LOG05,
+                     stCliente.lCodCliente             ,
+                     stCliente.pAboRent[0].lNumAbonado ,
+                     stCliente.pAboRent[0].lNumAlquiler);
+        iNumAbonados = 1;
+    }
+    else if( iTipoFact == FACT_ROAMINGVIS )
+    {
+        vDTrazasLog (szExeName,
+                     "\n\t\t* Paso a PreFactura TRAFICO Roaming Visitante"
+                     "\n\t\t=> Cod.Cliente [%ld]"
+                     "\n\t\t=> Num.Abonado [%ld]"
+                     "\n\t\t=> Num.EstaDia [%ld]",LOG05,
+                     stCliente.lCodCliente             ,
+                     stCliente.pAboRoaVis->lNumAbonado ,
+                     stCliente.pAboRoaVis->lNumEstaDia);
+        iNumAbonados = 1;
+    }
+    i = stPreFactura.iNumRegistros;
+
+    for( iInd1=0;iInd1<iNumAbonados;iInd1++ )
+    {
+        if( iTipoFact != FACT_ROAMINGVIS && iTipoFact != FACT_RENTAPHONE )
+        {
+            pTmpAbon    = (ABONTAR *)&stCliente.pAbonados[iInd1];
+            iNumConcTar = stCliente.pAbonados[iInd1].iNumConcTar;
+
+            if( !strcmp (stCliente.szTipPlanTarif, "I") )
+                dTotMinLocales =
+                (double)dfnTotMinutosLocales (&stCliente.pAbonados[iInd1]);
+
+            vDTrazasLog (szExeName,"\t\t* Abonado          : [%ld]\n"
+                         "\t\t* Conceptos Tarif. : [%d] \n",LOG04,
+                         pTmpAbon->lNumAbonado,pTmpAbon->iNumConcTar);
+        }
+        else if( iTipoFact == FACT_RENTAPHONE )
+        {
+            pTmpAboRent = (ABORENT *)stCliente.pAboRent     ;
+            iNumConcTar =  stCliente.pAboRent[0].iNumConcTar;
+            vDTrazasLog (szExeName,"\n\t\t* Abonado          : [%ld]"
+                                   "\n\t\t* Conceptos Tarif. : [%d] ",LOG04,
+                                   stCliente.pAboRent[0].lNumAbonado ,
+                                   iNumConcTar);
+        }
+        else if( iTipoFact == FACT_ROAMINGVIS )
+        {
+            pTmpAboRoaVis = (ABOROAVIS *)stCliente.pAboRoaVis;
+            iNumConcTar   = stCliente.pAboRoaVis->iNumConcTar;
+
+            vDTrazasLog (szExeName,"\n\t\t* Abonado          : [%ld]"
+                                   "\n\t\t* Conceptos Tarif. : [%d] ",LOG04,
+                                   stCliente.pAboRoaVis->lNumAbonado ,
+                                   iNumConcTar);
+
+        }
+
+        for( iInd2=0;iInd2<iNumConcTar;iInd2++ )
+        {
+            pTmpConcTar =
+                (iTipoFact == FACT_RENTAPHONE)?
+                (CONCTAR *)&pTmpAboRent->pConcTar  [iInd2]:
+                (iTipoFact == FACT_ROAMINGVIS)?
+                (CONCTAR *)&pTmpAboRoaVis->pConcTar[iInd2]:
+                (CONCTAR *)&pTmpAbon->pConcTar[iInd2]     ;
+
+            vDTrazasLog (szExeName,"\t\t* Concepto  [%d]\n",LOG06,
+                         pTmpConcTar->iCodFacturacion);
+
+
+			/*CMD -- TRAZADOR -- INC. 189483 */
+
+            vDTrazasLog (szExeName,"\n\t\t* CHEK pTmpConcTar->dImpConsumido  : [%f] \n"
+                                   "\n\t\t* pTmpConcTar->iValParametro : [%d] \n",LOG03,
+                                   pTmpConcTar->dImpConsumido ,
+                                   pTmpConcTar->iValParametro);
+													
+
+            /* if( (pTmpConcTar->dImpConsumido >= 0.01) || (pstParamGener.iConsConcTrafico == 1) )*/
+            if( (pTmpConcTar->dImpConsumido >= 0.01) || (pTmpConcTar->iValParametro == 1) ) /* PGG - 193496 - 28-03-2013 */
+            {
+
+                if( stPreFactura.iNumRegistros >= MAX_CONCFACTUR )
+                {
+                    iDError (szExeName,ERR035,vInsertarIncidencia);
+                    return(FALSE);
+                }
+                stPreFactura.A_PFactura.bOptTrafico [i] = TRUE                 ;
+                stPreFactura.A_PFactura.lNumProceso [i] = stStatus.IdPro       ;
+                stPreFactura.A_PFactura.lCodCliente [i] = stCliente.lCodCliente;
+                stPreFactura.A_PFactura.iCodConcepto[i] = pTmpConcTar->iCodFacturacion;
+
+                strcpy (stPreFactura.A_PFactura.szDesConcepto [i], pTmpConcTar->szDesConcepto);
+
+                if( !bGetMaxColPreFa (stPreFactura.A_PFactura.iCodConcepto[i],
+                                      &stPreFactura.A_PFactura.lColumna[i]) )
+                    return(FALSE);
+
+                stPreFactura.A_PFactura.iCodProducto[i] = pTmpConcTar->iCodProducto   ;
+
+                strcpy (stPreFactura.A_PFactura.szFecEfectividad [i], szSysDate);
+
+                if( stProceso.iCodTipDocum == stDatosGener.iCodLiquidacion||
+                    stProceso.iCodTipDocum == stDatosGener.iCodRentaPhone ||
+                    stProceso.iCodTipDocum == stDatosGener.iCodRoamingVis )
+                    strcpy (stPreFactura.A_PFactura.szFecValor [i],
+                            szSysDate);
+                else
+                    strcpy (stPreFactura.A_PFactura.szFecValor [i],
+                            stCiclo.szFecHastaLlam);
+                            /* stCiclo.szFecEmision); */
+
+                if( iTipoFact == FACT_CICLO && pTmpConcTar->iIndTabla == FRASOC )
+                {
+                    vfnAplicaPlanOptimo (pTmpConcTar, dTotMinLocales);
+                }
+
+                stPreFactura.A_PFactura.dImpConcepto  [i] =
+                pTmpConcTar->dImpConsumido;
+
+                stPreFactura.A_PFactura.dImpFacturable[i] =
+                fnCnvDouble(stPreFactura.A_PFactura.dImpConcepto [i], USOFACT) ;
+
+                stPreFactura.A_PFactura.dImpMontoBase [i] = 0.0       ;
+                stPreFactura.A_PFactura.lSegConsumido [i] =
+                pTmpConcTar->lSegConsumido;
+
+                stPreFactura.A_PFactura.lCodPlanCom   [i] =
+                stCliente.lCodPlanCom  ;
+                stPreFactura.A_PFactura.iIndFactur    [i] =
+                pTmpAbon->iIndFactur   ;
+                stPreFactura.A_PFactura.iCodCatImpos  [i] =
+                stCliente.iCodCatImpos ;
+                stPreFactura.A_PFactura.iCodPortador  [i] =
+                pTmpConcTar->iCodOperador;
+                stPreFactura.A_PFactura.iIndEstado    [i] = EST_NORMAL;
+                stPreFactura.A_PFactura.lNumUnidades  [i] = 1         ;
+                stPreFactura.A_PFactura.iCodTipConce  [i] =
+                pTmpConcTar->iCodTipConce;
+
+                stPreFactura.A_PFactura.lCodCiclFact  [i] =
+                stCiclo.lCodCiclFact   ;
+                stPreFactura.A_PFactura.iCodConceRel  [i] = 0         ;
+                stPreFactura.A_PFactura.lColumnaRel   [i] = 0         ;
+                stPreFactura.A_PFactura.lNumAbonado   [i] =
+                pTmpConcTar->lNumAbonado;
+
+                strcpy (stPreFactura.A_PFactura.szCodRegion   [i],
+                        stCliente.szCodRegion   );
+                strcpy (stPreFactura.A_PFactura.szCodProvincia[i],
+                        stCliente.szCodProvincia);
+                strcpy (stPreFactura.A_PFactura.szCodCiudad   [i],
+                        stCliente.szCodCiudad   );
+                strcpy (stPreFactura.A_PFactura.szCodModulo   [i], "TA");
+                strcpy (stPreFactura.A_PFactura.szCodMoneda   [i],
+                        pTmpConcTar->szCodMoneda);
+
+                stPreFactura.A_PFactura.szNumTerminal[i][0] = 0;
+                stPreFactura.A_PFactura.szNumSerieMec[i][0] = 0;
+                stPreFactura.A_PFactura.szNumSerieLe [i][0] = 0;
+
+                stPreFactura.A_PFactura.lCapCode       [i] = ORA_NULL;
+                stPreFactura.A_PFactura.iFlagImpues    [i] = 0       ;
+                stPreFactura.A_PFactura.iFlagDto       [i] =
+                (stPreFactura.A_PFactura.iCodTipConce[i] ==CARRIER)?0:1;
+
+                if( !iCarrier &&
+                    stPreFactura.A_PFactura.iCodTipConce [i] == CARRIER )
+                    iCarrier = 1;
+
+                stPreFactura.A_PFactura.fPrcImpuesto   [i] =
+                (stPreFactura.A_PFactura.iCodTipConce[i] ==IMPUESTO)?
+                stDatosGener.fPctIva:0.0                          ;
+
+                stPreFactura.A_PFactura.dValDto        [i] = 0.0     ;
+                stPreFactura.A_PFactura.iTipDto        [i] = 0       ;
+                stPreFactura.A_PFactura.lNumVenta      [i] = 0       ;
+                stPreFactura.A_PFactura.lNumTransaccion[i] = 0       ;
+                stPreFactura.A_PFactura.iMesGarantia   [i] = 0       ;
+                stPreFactura.A_PFactura.iIndAlta       [i] = 0       ;
+                stPreFactura.A_PFactura.iIndSuperTel   [i] = 0       ;
+                stPreFactura.A_PFactura.iNumPaquete    [i] = 0       ;
+                stPreFactura.A_PFactura.iIndCuota      [i] = 0       ;
+                stPreFactura.A_PFactura.iNumCuotas     [i] = 0       ;
+                stPreFactura.A_PFactura.iOrdCuota      [i] = 0       ;
+
+                /* TMC-04079 */
+                strcpy( stPreFactura.A_PFactura.szCodPlanTarif [i], pTmpConcTar->szCodPlanTarif );
+                strcpy( stPreFactura.A_PFactura.szCod_Unidad   [i], pTmpConcTar->szCod_Unidad  );
+                stPreFactura.A_PFactura.lhNumUniFree    [i] =   pTmpConcTar->lhNumUniFree   ;
+
+                stPreFactura.A_PFactura.ihCodOperador   [i] = pTmpConcTar->iCodOperador ;
+
+                vPrintRegInsert (i,"Trafico",bError);
+                i++                                 ;
+
+            }/* fin if CodAnomalia ... */
+            else
+            {
+
+                if( !bfnEscribeAnoTar (pTmpConcTar) )
+                    return(FALSE);
+
+					/*CMD -- TRAZADOR -- INC. 189483 */
+                vDTrazasLog (szExeName,"\n\t\t*CHe k , escribe anomalia y continua",LOG05);
+
+            }
+
+        }/* fin for iInd2 ... */
+
+    }/* fin for iInd1 ... */
+
+    stPreFactura.iNumRegistros = i;
+
+    if( iCarrier )
+        vfnRelacionCarrier ();
+
+    return(1);
+}/*********************** Final bEMTarificacion ******************************/
+
+/*****************************************************************************/
+/*                            funcion : vfnRelacionCarrier                   */
+/*****************************************************************************/
+static void vfnRelacionCarrier ()
+{
+    int i = 0, j = 0;
+
+    for( i=0;i<stPreFactura.iNumRegistros;i++ )
+    {
+        if( stPreFactura.A_PFactura.iFlagImpues [i] == 0     &&
+            stPreFactura.A_PFactura.iCodTipConce[i] == CARRIER )
+        {
+            for( j=0;j<stPreFactura.iNumRegistros;j++ )
+            {
+                if( stPreFactura.A_PFactura.iCodTipConce[j] == IMPUESTO &&
+                    stPreFactura.A_PFactura.lNumAbonado [i] ==
+                    stPreFactura.A_PFactura.lNumAbonado [j]             &&
+                    stPreFactura.A_PFactura.iCodPortador[i] ==
+                    stPreFactura.A_PFactura.iCodPortador[j] )
+                {
+                    stPreFactura.A_PFactura.iFlagImpues [i] =          1;
+                    stPreFactura.A_PFactura.iCodConceRel[j] =
+                    stPreFactura.A_PFactura.iCodConcepto[i];
+                    stPreFactura.A_PFactura.lColumnaRel [j] =
+                    stPreFactura.A_PFactura.lColumna    [i];
+                    break;
+                }
+            }
+        }
+    }
+}/***************************** Final vfnRelacionCarrier *********************/
+
+/*****************************************************************************/
+/*                            funcion : vFreeTarificacion                    */
+/* -Funcion que libera la memoria de stCliente.pAbonados                     */
+/*****************************************************************************/
+void vfnFreeTarificacion(int iTipoFact)
+{
+    int iCont;
+
+    if( iTipoFact == FACT_RENTAPHONE )
+    {
+        if( stCliente.pAboRent             != (ABORENT *)NULL &&
+            stCliente.pAboRent[0].pConcTar != (CONCTAR *)NULL )
+        {
+            free (stCliente.pAboRent[0].pConcTar)              ;
+            stCliente.pAboRent[0].pConcTar    = (CONCTAR *)NULL;
+            stCliente.pAboRent[0].iNumConcTar = 0              ;
+        }
+        free (stCliente.pAboRent);
+    }
+    if( stCliente.pAbonados != (ABONTAR *)NULL )
+    {
+        for( iCont = 0;iCont < stCliente.iNumAbonados;iCont++ )
+        {
+            if( stCliente.pAbonados[iCont].pConcTar != (CONCTAR *)NULL )
+            {
+                free (stCliente.pAbonados[iCont].pConcTar)              ;
+                stCliente.pAbonados[iCont].pConcTar    = (CONCTAR *)NULL;
+                stCliente.pAbonados[iCont].iNumConcTar = 0              ;
+            }
+        }
+        free(stCliente.pAbonados);
+        stCliente.pAbonados = (ABONTAR *)NULL;
+    }
+    stCliente.iNumAbonados = 0;
+}/************************ Final vFreeTarificacion ***************************/
+
+
+/*****************************************************************************/
+/*                        funcion : bfnCargaAbonadosCliente                    */
+/* -Funcion que carga los abonados que estan en la tabla Ga_Infa%    que es- */
+/*  tan en las distintas tablas de tarificacion .                            */
+/* -Valores Retorno : Error->FALSE, !Error->TRUE                             */
+/*****************************************************************************/
+static BOOL bfnCargaAbonadosCliente (CICLOCLI *pCicloCli,int iTipoFact)
+{
+    BOOL bRes = 1;
+
+    vDTrazasLog (szExeName,"\n\t\t* Carga de Abonados con Trafico",LOG04);
+
+    if( pCicloCli->iCodProducto == stDatosGener.iProdCelular )
+        bRes =bfnCargaAbonadosCelular(pCicloCli,iTipoFact) ;
+    else
+    {
+        vDTrazasLog (szExeName,
+                     "\n\t\t* Productos en Proceso[%d] "
+                     "\n\t\t* Productos Celular   [%d] ",LOG04,
+                     pCicloCli->iCodProducto , stDatosGener.iProdCelular);
+
+        iDError (szExeName,ERR003,vInsertarIncidencia,
+                 pCicloCli->iCodProducto);
+        bRes = FALSE;
+    }
+    return(bRes);
+}/*********************** Final bfnCargaAbonadosCliente **********************/
+
+
+/*****************************************************************************/
+/*                        funcion : bfnCargaAbonadosCelular                  */
+/* -Funcion que carga los abonados de Ga_InfacCel que esten en Ta_Acum% y que*/
+/*  verifican las restricciones.                                             */
+/* -Valores Retorno : SQLCODE                                                */
+/*****************************************************************************/
+static BOOL bfnCargaAbonadosCelular (CICLOCLI *pCicloCli,int iTipoFact)
+{
+    BOOL bRes = TRUE;
+
+    EXEC SQL BEGIN DECLARE SECTION;
+    static char* szhRowid         ; EXEC SQL VAR szhRowid          IS STRING(19);
+    static long  lhCodCliente     ;
+    static long  lhNumAbonado     ;
+    static long  lhCodCiclFact    ;
+    int    iUno=1;
+    int    iCero=0;
+    EXEC SQL END DECLARE SECTION;
+
+    if( iTipoFact == FACT_CICLO )
+    {
+        EXEC SQL DECLARE Cur_InfacCel CURSOR FOR
+        SELECT /*+ index (GA_INFACCEL PK_GA_INFACCEL) */
+        ROWID, NUM_ABONADO
+        FROM   GA_INFACCEL
+        WHERE COD_CLIENTE   = :lhCodCliente
+        AND NUM_ABONADO   = :lhNumAbonado
+        AND COD_CICLFACT <= :lhCodCiclFact
+        AND IND_FACTUR    = :iUno
+        AND (EXISTS
+           (SELECT /*+ index (TA_ACUMAIREFRASOC PK_TA_ACUMAIREFRASOC)*/
+            NUM_ABONADO
+            FROM   TA_ACUMAIREFRASOC
+            WHERE  NUM_ABONADO   = :lhNumAbonado
+            /*AND  COD_CICLFACT <= :lhCodCiclFact*/
+	    AND COD_CICLFACT IN (SELECT COD_CICLFACT FROM FA_CICLFACT /*AFGS - 33926*/
+	                         WHERE FEC_EMISION <=(SELECT FEC_EMISION
+				                      FROM FA_CICLFACT
+				                      WHERE COD_CICLFACT = :lhCodCiclFact)
+                                 AND IND_FACTURACION > :iCero)
+            AND  COD_CLIENTE   = :lhCodCliente
+            AND  NUM_PROCESO   = :iCero)
+           OR
+           EXISTS
+           (SELECT /*+ index(TA_ACUMOPER PK_TA_ACUMOPER) */
+            NUM_ABONADO
+            FROM   TA_ACUMOPER
+            WHERE  NUM_ABONADO   = :lhNumAbonado
+            /*AND  COD_CICLFACT <= :lhCodCiclFact*/
+	    AND COD_CICLFACT IN (SELECT COD_CICLFACT FROM FA_CICLFACT /*AFGS - 33926*/
+	                         WHERE FEC_EMISION <=(SELECT FEC_EMISION
+				                      FROM FA_CICLFACT
+				                      WHERE COD_CICLFACT = :lhCodCiclFact)
+                                 AND IND_FACTURACION > :iCero)
+            AND  COD_CLIENTE   = :lhCodCliente
+            AND  NUM_PROCESO   = :iCero)
+           OR
+           EXISTS
+           (SELECT /*+ index(TA_ACUMLLAMADASROA PK_TA_ACUMLLAMADASROA)*/
+            NUM_ABONADO
+            FROM   TA_ACUMLLAMADASROA
+            WHERE  NUM_ABONADO   = :lhNumAbonado
+            /*AND  COD_CICLFACT <= :lhCodCiclFact*/
+	    AND COD_CICLFACT IN (SELECT COD_CICLFACT FROM FA_CICLFACT /*AFGS - 33926*/
+	                         WHERE FEC_EMISION <=(SELECT FEC_EMISION
+				                      FROM FA_CICLFACT
+				                      WHERE COD_CICLFACT = :lhCodCiclFact)
+                                 AND IND_FACTURACION > :iCero)
+            AND  COD_CLIENTE   = :lhCodCliente
+            AND  NUM_PROCESO   = :iCero) );
+    }
+    else if( iTipoFact == FACT_BAJA )
+    {
+        EXEC SQL DECLARE Cur_InfacCelBaja CURSOR FOR
+        SELECT /*+ index (GA_INFACCEL PK_GA_INFACCEL) */
+        ROWID, NUM_ABONADO
+        FROM   GA_INFACCEL
+        WHERE COD_CLIENTE = :lhCodCliente
+        AND NUM_ABONADO = :lhNumAbonado
+        AND COD_CICLFACT= :lhCodCiclFact
+        AND IND_FACTUR  = :iUno
+        AND (EXISTS
+             (SELECT /*+ index (TA_ACUMAIREFRASOC PK_TA_ACUMAIREFRASOC)*/
+              NUM_ABONADO
+              FROM   TA_ACUMAIREFRASOC
+              WHERE  NUM_ABONADO   = :lhNumAbonado
+              AND  COD_CICLFACT  = :lhCodCiclFact
+              AND  COD_CLIENTE   = :lhCodCliente
+              AND  NUM_PROCESO   = :iCero)
+             OR
+             EXISTS
+             (SELECT /*+ index(TA_ACUMOPER PK_TA_ACUMOPER) */
+              NUM_ABONADO
+              FROM   TA_ACUMOPER
+              WHERE  NUM_ABONADO   = :lhNumAbonado
+              AND  COD_CICLFACT  = :lhCodCiclFact
+              AND  COD_CLIENTE   = :lhCodCliente
+              AND  NUM_PROCESO   = :iCero)
+             OR
+             EXISTS
+             (SELECT /*+ index(TA_ACUMLLAMADASROA PK_TA_ACUMLLAMADASROA)*/
+              NUM_ABONADO
+              FROM   TA_ACUMLLAMADASROA
+              WHERE  COD_CICLFACT  = :lhCodCiclFact
+              AND  NUM_ABONADO   = :lhNumAbonado
+              AND  COD_CLIENTE   = :lhCodCliente
+              AND  NUM_PROCESO   = :iCero) );
+    }
+    else if( iTipoFact == FACT_LIQUIDACION )
+    {
+        EXEC SQL DECLARE Cur_InfacCelLiq CURSOR FOR
+        SELECT /*+ index (GA_INFACCEL PK_GA_INFACCEL) */
+        ROWID, NUM_ABONADO
+        FROM   GA_INFACCEL
+        WHERE COD_CLIENTE = :lhCodCliente
+        AND NUM_ABONADO = :lhNumAbonado
+        AND FEC_BAJA   <= TO_DATE (:szSysDate,'YYYYMMDDHH24MISS')
+        AND IND_FACTUR  = :iUno
+        AND (EXISTS
+           (SELECT /*+ index (TA_ACUMAIREFRASOC PK_TA_ACUMAIREFRASOC)*/
+            NUM_ABONADO
+            FROM   TA_ACUMAIREFRASOC
+            WHERE  NUM_ABONADO   = :lhNumAbonado
+            AND  COD_CLIENTE   = :lhCodCliente
+            AND  NUM_PROCESO   = :iCero)
+           OR
+           EXISTS
+           (SELECT /*+ index(TA_ACUMOPER PK_TA_ACUMOPER) */
+            NUM_ABONADO
+            FROM   TA_ACUMOPER
+            WHERE  NUM_ABONADO  = :lhNumAbonado
+            AND  COD_CLIENTE  = :lhCodCliente
+            AND  NUM_PROCESO  = :iCero)
+           OR
+           EXISTS
+           (SELECT /*+ index(TA_ACUMLLAMADASROA PK_TA_ACUMLLAMADASROA)*/
+            NUM_ABONADO
+            FROM   TA_ACUMLLAMADASROA
+            WHERE  NUM_ABONADO  = :lhNumAbonado
+            AND  COD_CLIENTE  = :lhCodCliente
+            AND  NUM_PROCESO  = :iCero) );
+    }
+
+    vDTrazasLog (szExeName,
+                 "\n\t\t* Parametros de Entrada Carga Abonados Celular con Trafico "
+                 "\n\t\t=> Cliente     [%ld]"
+                 "\n\t\t=> Num.Abonado [%ld]"
+                 "\n\t\t=> Cod.CiclFact[%ld]",LOG04,
+                 stCliente.lCodCliente,pCicloCli->lNumAbonado,
+                 stCiclo.lCodCiclFact);
+
+    lhCodCiclFact = stCiclo.lCodCiclFact  ;
+    lhCodCliente  = stCliente.lCodCliente ;
+    lhNumAbonado  = pCicloCli->lNumAbonado;
+
+    if( iTipoFact == FACT_CICLO )
+    {
+        EXEC SQL OPEN Cur_InfacCel;
+    }
+    else if( iTipoFact == FACT_BAJA )
+    {
+        EXEC SQL OPEN Cur_InfacCelBaja;
+    }
+    else if( iTipoFact == FACT_LIQUIDACION )
+    {
+        EXEC SQL OPEN Cur_InfacCelLiq;
+    }
+
+    if( SQLCODE )
+    {
+        iDError (szExeName,ERR000,vInsertarIncidencia,"Open->Ga_InfacCel",
+                 szfnORAerror());
+        return(FALSE);
+    }
+    while( bRes )
+    {
+        if( (stCliente.pAbonados =
+             (ABONTAR *)realloc ((ABONTAR *)stCliente.pAbonados,
+                                 sizeof(ABONTAR)*(stCliente.iNumAbonados+1)))==(ABONTAR *)NULL )
+        {
+            iDError (szExeName,ERR005,vInsertarIncidencia,
+                     "stCliente.pAbonados",szfnORAerror());
+            return(FALSE);
+        }
+        memset(&stCliente.pAbonados[stCliente.iNumAbonados],0,sizeof(ABONTAR));
+
+        szhRowid = stCliente.pAbonados[stCliente.iNumAbonados].szRowid;
+
+        if( iTipoFact == FACT_CICLO )
+            EXEC SQL FETCH Cur_InfacCel INTO :szhRowid, :lhNumAbonado;
+        else if( iTipoFact == FACT_BAJA )
+            EXEC SQL FETCH Cur_InfacCelBaja INTO :szhRowid, :lhNumAbonado;
+        else if( iTipoFact == FACT_LIQUIDACION )
+            EXEC SQL FETCH Cur_InfacCelLiq INTO :szhRowid, :lhNumAbonado;
+
+        switch( SQLCODE )
+        {
+            case SQLOK :
+                stCliente.pAbonados[stCliente.iNumAbonados].lNumAbonado =
+                lhNumAbonado   ;
+                stCliente.pAbonados[stCliente.iNumAbonados].iCodProducto=
+                pCicloCli->iCodProducto;
+                stCliente.pAbonados[stCliente.iNumAbonados].iNumConcTar = 0;
+
+                stCliente.pAbonados[stCliente.iNumAbonados].pConcTar =
+                (CONCTAR *)NULL;
+                stCliente.iNumAbonados++;
+
+                break;
+            case SQLNOTFOUND:
+                bRes = FALSE;
+                break;
+            default:
+                iDError (szExeName,ERR000,vInsertarIncidencia,
+                         "Fetch->Ga_InfacCel",szfnORAerror());
+                bRes = FALSE;
+                break;
+        }
+    }/* fin while */
+    if( SQLCODE == SQLNOTFOUND )
+    {
+        if( iTipoFact == FACT_CICLO )
+            EXEC SQL CLOSE Cur_InfacCel;
+        else if( iTipoFact == FACT_BAJA )
+            EXEC SQL CLOSE Cur_InfacCelBaja;
+        else if( iTipoFact == FACT_LIQUIDACION )
+            EXEC SQL CLOSE Cur_InfacCelLiq;
+
+        if( SQLCODE )
+            iDError (szExeName,ERR000,vInsertarIncidencia,"Close->Ga_InfacCel",
+                     szfnORAerror());
+    }
+    vDTrazasLog (szExeName,"\n\t\t* Abonados Cargados Celular [%d]",LOG04,
+                 stCliente.iNumAbonados);
+    return(SQLCODE == SQLOK)?TRUE:FALSE;
+}/************************ Final bfnCargaAbonadosCelular *********************/
+
+
+
+
+/*****************************************************************************/
+/*                           funcion : vPrintConcTar                         */
+/*****************************************************************************/
+static void vfnPrintConcTarificacion (void)
+{
+    int  iCon1 = 0;
+    int  iCon2 = 0;
+    int  iNumConcTar  = 0;
+
+    vDTrazasLog (szExeName,"\n\t\t* Conceptos de Tarificacion Cargados ",
+                 LOG05);
+    for( iCon1=0;iCon1<stCliente.iNumAbonados;iCon1++ )
+    {
+        iNumConcTar = stCliente.pAbonados[iCon1].iNumConcTar;
+        vDTrazasLog (szExeName,"\t\t=>Abonado [%ld] Numero Conceptos Tarif.[%d]",LOG05,
+                                stCliente.pAbonados[iCon1].lNumAbonado,
+                                stCliente.pAbonados[iCon1].iNumConcTar);
+        for( iCon2=0;iCon2<iNumConcTar;iCon2++ )
+        {
+            vDTrazasLog (szExeName,"\n\t\t[%d]-Cod.Facturacion.............[%d] "
+                                   "\n\t\t[%d]-Ind.Tabla...................[%d] "
+                                   "\n\t\t[%d]-Imp.Consumido...............[%lf]"
+                                   "\n\t\t[%d]-Segundos Consumidos.........[%ld]"
+                                   "\n\t\t[%d]-Numero de Pulsos............[%ld]"
+                                   "\n\t\t[%d]-Cod.FranHoraSoc.............[%d] "
+                                   "\n\t\t[%d]-Cod.Operador................[%d] "
+                                   ,LOG05
+                                   ,iCon2,stCliente.pAbonados[iCon1].pConcTar[iCon2].iCodFacturacion
+                                   ,iCon2,stCliente.pAbonados[iCon1].pConcTar[iCon2].iIndTabla
+                                   ,iCon2,stCliente.pAbonados[iCon1].pConcTar[iCon2].dImpConsumido
+                                   ,iCon2,stCliente.pAbonados[iCon1].pConcTar[iCon2].lSegConsumido
+                                   ,iCon2,stCliente.pAbonados[iCon1].pConcTar[iCon2].lNumPulsos
+                                   ,iCon2,stCliente.pAbonados[iCon1].pConcTar[iCon2].iCodFranHoraSoc
+                                   ,iCon2,stCliente.pAbonados[iCon1].pConcTar[iCon2].iCodOperador)   ;
+        }/* fin for iCon2 */
+    }/* fin for iCon1 */
+}
+/*************************** Final vPrintConcTar ****************************/
+
+
+/*****************************************************************************/
+/*                          funcion : bValidacionConcTar                     */
+/*****************************************************************************/
+static BOOL bfnValidacionConcTar (CONCTAR *pConcTar)
+{
+    int iRes = 0;
+
+    CONCEPTO stConcepto;
+
+    memset (&stConcepto,0,sizeof(CONCEPTO));
+
+    if( !bFindConcepto (pConcTar->iCodFacturacion, &stConcepto) )
+    {
+        iDError (szExeName,ERR021,vInsertarIncidencia,"pstConcepto");
+        iRes = ERR021;
+    }
+    if( iRes == 0 )
+    {
+        strcpy (pConcTar->szCodMoneda  ,stConcepto.szCodMoneda  );
+        strcpy (pConcTar->szDesConcepto,stConcepto.szDesConcepto);
+        pConcTar->iCodTipConce  = stConcepto.iCodTipConce        ;
+    }
+    if( iRes == 0 && (stConcepto.iCodTipConce == IMPUESTO ||
+                      stConcepto.iCodTipConce == DESCUENTO  ) )
+    {
+        sprintf (stAnomProceso.szObsAnomalia,"Tipo de Concepto erroneo %d",
+                 stConcepto.iCodTipConce);
+        iRes = ERR001;
+    }
+    if( iRes == 0 && stConcepto.iIndActivo == 0 )
+    {
+        strcpy (stAnomProceso.szObsAnomalia,"Indice Activo = 0");
+        iRes = ERR001;
+    }
+    if( iRes == 0 && pConcTar->dImpConsumido < 0 )
+    {
+        sprintf (stAnomProceso.szObsAnomalia,"Importe del concepto = %f",
+                 pConcTar->dImpConsumido);
+        iRes = ERR001;
+    }
+    if( iRes )
+    {
+        stAnomProceso.lNumProceso  = stStatus.IdPro           ;
+        stAnomProceso.lCodCliente  = stCliente.lCodCliente    ;
+        stAnomProceso.iCodConcepto = pConcTar->iCodFacturacion;
+        stAnomProceso.iCodProducto = pConcTar->iCodProducto   ;
+        stAnomProceso.lCodCiclFact = stCiclo.lCodCiclFact     ;
+
+		/*CMD -- TRAZADOR -- 189483*/
+            vDTrazasLog (szExeName,"\n\t\t*stAnomProceso.lNumProceso :[%l] "
+			                       "\n\t\t* stAnomProceso.lCodCliente    : [%l]"
+                                   "\n\t\t* stAnomProceso.iCodConcepto : [%l] "
+								   "\n\t\t* stAnomProceso.lCodCiclFact : [%l] ",LOG05,
+								   stAnomProceso.lNumProceso,
+								   stAnomProceso.lCodCliente ,
+                                   stAnomProceso.iCodConcepto ,
+                                   stAnomProceso.lCodCiclFact);
+		/* hasta aqui*/
+
+
+        strncpy (stAnomProceso.szDesProceso,"PreBilling-Tarificacion",
+                 sizeof (stAnomProceso.szDesProceso));
+
+        if( iRes == ERR001 )
+        {
+            iDError (szExeName,ERR001,vInsertarIncidencia,
+                     stAnomProceso.iCodConcepto,
+                     stConcepto.iIndActivo     ,
+                     stConcepto.iCodTipConce   ,
+                     pConcTar->dImpConsumido);
+        }
+    }
+    return(iRes == 0)?TRUE:FALSE;
+}/*************************** Final bValidacionConcTar ***********************/
+
+/*****************************************************************************/
+/*                          funcion : bfnValidacionCarrier                   */
+/*****************************************************************************/
+static BOOL bfnValidacionCarrier (CONCTAR *pConcTar, CONCEPTO stConcepto)
+{
+    int iRes = 0;
+
+    strcpy (pConcTar->szCodMoneda  ,stConcepto.szCodMoneda  );
+    strcpy (pConcTar->szDesConcepto,stConcepto.szDesConcepto);
+
+    pConcTar->iCodTipConce = stConcepto.iCodTipConce;
+
+    if( stConcepto.iCodTipConce == DESCUENTO )
+    {
+        sprintf (stAnomProceso.szObsAnomalia,"Tipo de Concepto erroneo %d",
+                 stConcepto.iCodTipConce);
+        iRes = ERR001;
+    }
+    if( iRes == 0 && stConcepto.iIndActivo == 0 )
+    {
+        strcpy (stAnomProceso.szObsAnomalia,"Indice Activo = 0");
+        iRes = ERR001;
+    }
+    if( iRes == 0 && pConcTar->dImpConsumido <= 0 )
+    {
+        sprintf (stAnomProceso.szObsAnomalia,"Importe del concepto = %f",
+                 pConcTar->dImpConsumido);
+        iRes = ERR001;
+    }
+    if( iRes )
+    {
+        stAnomProceso.lNumProceso  = stStatus.IdPro           ;
+        stAnomProceso.lCodCliente  = stCliente.lCodCliente    ;
+        stAnomProceso.iCodConcepto = pConcTar->iCodFacturacion;
+        stAnomProceso.iCodProducto = pConcTar->iCodProducto   ;
+        stAnomProceso.lCodCiclFact = stCiclo.lCodCiclFact     ;
+
+        strncpy (stAnomProceso.szDesProceso,"Tasacion-Carrier",
+                 sizeof (stAnomProceso.szDesProceso));
+
+        if( iRes == ERR001 )
+        {
+            iDError (szExeName,ERR001,vInsertarIncidencia,
+                     stAnomProceso.iCodConcepto,
+                     stConcepto.iIndActivo     ,
+                     stConcepto.iCodTipConce   ,
+                     pConcTar->dImpConsumido);
+        }
+    }
+    return(iRes == 0)?TRUE:FALSE;
+}/*************************** Final bfnValidacionCarrier *********************/
+
+/*****************************************************************************/
+/*                           funcion : vfnAplicaPlanOptimo                   */
+/*****************************************************************************/
+static void vfnAplicaPlanOptimo (CONCTAR *pConcTar   ,
+                                 double   dMinTotal)
+{
+    int  i           = 0    ;
+    int  j           = 0    ;
+    int  k           = 0    ;
+
+
+  /*********************************************************************/
+  /* En caso de ser H o E, el cargo basico, estara asociado al cliente */
+  /* y por tanto el NumAbonado sera 0.                                 */
+  /*********************************************************************/
+    vDTrazasLog (szExeName,"\n\t\t* Aplicacion Plan Optimo"
+                 "\n\t\t=> Tip.PlanTarif     [%s]"
+                 "\n\t\t=> Tot.Minutos Local [%f]", LOG05,
+                 stCliente.szTipPlanTarif, dMinTotal);
+
+    while( i<NUM_OPTIMO )
+    {
+        j = 0;
+
+        while( j<stCliente.iNumAbonos )
+        {
+      /******************************************************************/
+      /*  El Abonado 0 identifica los Cargos Basicos a Nivel de Cliente */
+      /* de los Clientes Holding o Empresa.                             */
+      /******************************************************************/
+
+            if( stCliente.pAbonos [j].lNumAbonado == pConcTar->lNumAbonado ||
+                ( stCliente.pAbonos [j].lNumAbonado == 0 &&
+                  !stCliente.pAbonos [j].bPlanOptimo ) )
+            {
+
+                for( k=0;k<stCliente.pAbonos[j].iNumCBasicos;k++ )
+                {
+                    if( !strcmp(stCliente.pAbonos[j].pstCBasico[k].szCodPlanTarif,
+                                pstOptimo [i].szCodPlanTarif) &&
+                        pstOptimo [i].lMinDesde <= dMinTotal &&
+                        ( pstOptimo [i].lMinHasta >= dMinTotal ||
+                          pstOptimo [i].lMinHasta == -1) )
+                    {
+                        vDTrazasLog (szExeName,
+                                     "\n\t\t* Importes Antes del Descuento"
+                                     "\n\t\t=> Cod.FranHoraSoc   [%d]"
+                                     "\n\t\t=> Prc.Bajo          [%f]"
+                                     "\n\t\t=> Prc.Normal        [%f]"
+                                     "\n\t\t=> Prc.Abono         [%f]"
+                                     "\n\t\t=> Importe Consumido [%f]"
+                                     "\n\t\t=> Importe CBasico   [%f]", LOG05,
+                                     pConcTar->iCodFranHoraSoc,
+                                     pstOptimo [i].fPrcBajo   ,
+                                     pstOptimo [i].fPrcNormal ,
+                                     pstOptimo [i].fPrcAbono  ,
+                                     pConcTar->dImpConsumido  ,
+                                     stCliente.pAbonos[j].pstCBasico[k].dImpConcepto);
+
+                        if( pConcTar->iCodFranHoraSoc == iFRANBAJA )
+                            pConcTar->dImpConsumido   -=
+                            (double)(pConcTar->dImpConsumido *
+                                     pstOptimo [i].fPrcBajo)/100  ;
+                        else if( pConcTar->iCodFranHoraSoc == iFRANNORMAL )
+                            pConcTar->dImpConsumido   -=
+                            (double)(pConcTar->dImpConsumido *
+                                     pstOptimo [i].fPrcNormal)/100;
+
+                        if( !stCliente.pAbonos[j].bPlanOptimo )
+                        {
+                            stCliente.pAbonos[j].pstCBasico[k].dImpConcepto -=
+                            (double)(stCliente.pAbonos[j].pstCBasico[k].dImpConcepto *
+                                     pstOptimo [i].fPrcAbono)/100       ;
+                            stCliente.pAbonos[j].bPlanOptimo = TRUE;
+                        }
+                        vDTrazasLog (szExeName,
+                                     "\n\t\t* Importes Despues del Descuento"
+                                     "\n\t\t=> Importe Consumido [%f]"
+                                     "\n\t\t=> Importe CBasico   [%f]", LOG05,
+                                     pConcTar->dImpConsumido,
+                                     stCliente.pAbonos[j].pstCBasico[k].dImpConcepto);
+                    }
+
+                }/* fin for k ... */
+            }
+            j++;
+
+        }/* fin while bPlan ... */
+        i++;
+
+    }/* fin iNumOptimo */
+
+}/************************** Final vfnAplicaPlanOptimo ***********************/
+
+/*****************************************************************************/
+/*                         funcion : dfnTotMinutosLocales                    */
+/*****************************************************************************/
+static double dfnTotMinutosLocales (ABONTAR *stAbonTar)
+{
+    int    i      = 0;
+    double dTotal = 0;
+
+    for( i=0;i<stAbonTar->iNumConcTar;i++ )
+    {
+        if( stAbonTar->pConcTar [i].iIndTabla == FRASOC )
+            dTotal += stAbonTar->pConcTar [i].lSegConsumido;
+
+        vDTrazasLog (szExeName,
+                     "\n\t\t* Cconcepto de Trafico [%d]"
+                     "\n\t\t=> Ind Tabla      [%d]"
+                     "\n\t\t=> lSegConsumido  [%ld]"
+                     "\n\t\t=> Acumulado      [%f]"
+                     ,LOG05, i,stAbonTar->pConcTar [i].iIndTabla,stAbonTar->pConcTar [i].lSegConsumido, dTotal);
+    }
+    vDTrazasLog (szExeName,"\n\t\t* Total Trafico Local Adicional [%ld]",LOG05, dTotal);
+    return(double)dTotal/60;
+}/*************************** Final dfnTotMinutosLocales *********************/
+
+
+/*****************************************************************************/
+/*                          funcion : bfnBuscaAcumCodTarif                   */
+/* - Busca el codigo de tarificacion en pstTaConcepFact y acumula en pConcTar*/
+/*   los segundos e importe                                                  */
+/*****************************************************************************/
+
+static BOOL bfnBuscaAcumCodTarif(CONCEP *pstConcep    , long lNumAbonado
+                                 ,int iCodTarificacion, long lSegConsumido
+                                 ,double dImpConsumido, long lNumPulsos
+                                 ,int sIndEntSal      , int  sIndDestino
+                                 ,int iIndTabla       , char *szCodServicioOrig
+                                 ,char *szCodPlanTarif, char *szCod_Unidad
+                                 ,long lhNumUniFree	  , int  iCodOperador
+                                 ,int iParametro)
+{
+    int i=0;
+    BOOL bFound=FALSE;
+
+	char szCodServicio [6];
+
+	strcpy (szCodServicio," ");
+
+    vDTrazasLog (szExeName,
+                 "\n\t\t* Parametros de Entrada bfnBuscaAcumCodTarif"
+                 "\n\t\t=> Codigo Tarificacion      :[%d]"
+                 "\n\t\t=> Cant. Segundos consumidos:[%ld]"
+                 "\n\t\t=> Importe                  :[%f]"
+                 "\n\t\t=> Numero de Pulsos         :[%ld]"
+                 "\n\t\t=> Indicador de Tabla       :[%d]"
+                 "\n\t\t=> Codigo Servicio          :[%s]"
+                 "\n\t\t=> Codigo Plan Tarifario    :[%s]"
+                 "\n\t\t=> Codigo Unidad            :[%s]"
+                 "\n\t\t=> Minutos Libres           :[%ld]"
+				 "\n\t\t=> pstConcep->iNumConc      :[%i]"
+                 , LOG05,
+                 iCodTarificacion,lSegConsumido, dImpConsumido,lNumPulsos,iIndTabla,
+                 szCodServicioOrig, szCodPlanTarif, szCod_Unidad, lhNumUniFree, pstConcep->iNumConc);
+
+
+    for( i=0;i<pstConcep->iNumConc;i++ )
+    {
+	    /*CMD - TRAZADOR - 189483*/
+		  vDTrazasLog (szExeName,
+		               "\n\t\t*pstConcep->stConcTar[i].iCodTarificacion :[%d]"
+					   "\n\t\t*pstConcep->stConcTar[i].szCodPlanTarif :[%s]"
+					   ,LOG05,
+					   pstConcep->stConcTar[i].iCodTarificacion,pstConcep->stConcTar[i].szCodPlanTarif);
+		/* HASTA AQUI */
+		if(pstConcep->stConcTar[i].iCodTarificacion == iCodTarificacion)
+		{
+            if( iIndTabla!=1 ) /* Ta_AcumOper */
+            {
+                if( !strcmp(pstConcep->stConcTar[i].szCodPlanTarif,szCodPlanTarif) )
+                {
+                    bFound=TRUE;
+                    break;
+                }
+            }
+            else if( pstConcep->stConcTar[i].iIndDestino== sIndDestino &&
+                     pstConcep->stConcTar[i].iIndEntSal== sIndEntSal   &&
+                     !strcmp(pstConcep->stConcTar[i].szCodServicioOrig,szCodServicioOrig) &&
+                     !strcmp(pstConcep->stConcTar[i].szCodPlanTarif,szCodPlanTarif) )
+            {
+                bFound=TRUE;
+                break;
+            }
+		}
+	}
+
+	 /*CMD - TRAZADOR - 189483*/
+		         vDTrazasLog (szExeName,"\n\t\t*valor de bFound [%i] en  bfnBuscaAcumCodTarif ",LOG05,
+                 bFound);
+		         /* HASTA AQUI */
+
+    if( bFound )
+    {
+	    /*CMD - TRAZADOR - 189483*/
+		         vDTrazasLog (szExeName,"\n\t\t*si el bFound es verdadero "
+				 "\n\t\t=> dImpConsumido    [%f]"
+				 "\n\t\t=> pstConcep->stConcTar[i].dImpConsumido    [%f]",LOG05,
+                 dImpConsumido,pstConcep->stConcTar[i].dImpConsumido);
+		         /* HASTA AQUI */
+
+        pstConcep->stConcTar[i].lSegConsumido  += lSegConsumido ;
+        pstConcep->stConcTar[i].dImpConsumido  += dImpConsumido ;
+
+	}
+ 	else
+ 	{
+ 		/* rao: si es != "" obtiene cod.Serv. Generico para bolsas */
+ 		if (strcmp(szCodServicioOrig," ")!=0 && (!bGetCodServGenerico(szCodServicio)))
+		{
+ 				strcpy (szCodServicio, szCodServicioOrig);
+		}
+
+	    for( i=0;i<=NUM_TACONCEPFACT;i++ )
+	    {   /* rao: busca con  cod.Serv. Generico para bolsas */
+	        if( pstTaConcepFact[i].iCodTarificacion== iCodTarificacion )
+	        {
+	            if( iIndTabla!=1 ) /* Ta_AcumOper */
+	            {
+	                if( !strcmp(pstTaConcepFact[i].szCodServicio,szCodServicio) )
+	                {
+	                    bFound=TRUE;
+	                    break;
+	                }
+	            }
+	            else if( pstTaConcepFact[i].iIndDestino== sIndDestino &&
+	                     pstTaConcepFact[i].iIndEntSal== sIndEntSal   &&
+	                     !strcmp(pstTaConcepFact[i].szCodServicio,szCodServicio) )
+	            {
+	                bFound=TRUE;
+	                break;
+	            }
+	        }
+	    }
+	    if( bFound )
+	    {
+	    	if( (pstConcep->stConcTar = (CONCTAR *)realloc ((CONCTAR *)pstConcep->stConcTar,sizeof(CONCTAR)*(pstConcep->iNumConc+1)))==(CONCTAR *)NULL )
+	        {
+	            iDError(szExeName,ERR005,vInsertarIncidencia,"bfnBuscaAcumCodTarif: pstConcep->stConcTar",szfnORAerror());
+	            return(FALSE);
+	        }
+	        memset(&pstConcep->stConcTar[pstConcep->iNumConc],0,sizeof(CONCTAR));
+	        
+	        pstConcep->stConcTar[pstConcep->iNumConc].iValParametro   = iParametro                        ; /* PGG - 193496 - 28-03-2013 */  
+	        pstConcep->stConcTar[pstConcep->iNumConc].lNumAbonado     = lNumAbonado                       ;
+	        pstConcep->stConcTar[pstConcep->iNumConc].iCodProducto    = pstTaConcepFact[i].iCodProducto   ;
+	        pstConcep->stConcTar[pstConcep->iNumConc].iCodFacturacion = pstTaConcepFact[i].iCodFacturacion;
+	        pstConcep->stConcTar[pstConcep->iNumConc].iIndTabla       = pstTaConcepFact[i].iIndTabla      ;
+	        pstConcep->stConcTar[pstConcep->iNumConc].iIndDestino     = pstTaConcepFact[i].iIndDestino    ;
+
+	        if( pstConcep->stConcTar[pstConcep->iNumConc].iIndTabla == FRASOC )
+	        {
+	            pstConcep->stConcTar[pstConcep->iNumConc].iCodFranHoraSoc = iCodTarificacion			  ;
+		        pstConcep->stConcTar[pstConcep->iNumConc].iCodOperador    = iCodOperador                  ;
+		    }
+	        else
+	            pstConcep->stConcTar[pstConcep->iNumConc].iCodOperador    = iCodTarificacion;
+
+	        pstConcep->stConcTar[pstConcep->iNumConc].lNumPulsos      = lNumPulsos                        ;
+	        pstConcep->stConcTar[pstConcep->iNumConc].lNumProceso     = stStatus.IdPro                    ;
+	        pstConcep->stConcTar[pstConcep->iNumConc].iIndEntSal      = sIndEntSal                        ;
+	        pstConcep->stConcTar[pstConcep->iNumConc].iCarrier        = 0                                 ;
+
+	        pstConcep->stConcTar[pstConcep->iNumConc].lSegConsumido  += lSegConsumido                     ;
+
+			/*CMD - TRAZADOR - 189483*/
+		         vDTrazasLog (szExeName,"\n\t\t*pstConcep->stConcTar[pstConcep->iNumConc].iIndTabla == FRASOC "
+				 "\n\t\t=> lNumAbonado    [%ld]"
+				 "\n\t\t=> pstTaConcepFact[i].iCodFacturacion    [%ld]"
+				 "\n\t\t=> dImpConsumido    [%f]"
+				 "\n\t\t=> pstConcep->stConcTar[pstConcep->iNumConc].dImpConsumido   [%f]",LOG03,
+                 lNumAbonado,pstTaConcepFact[i].iCodFacturacion,dImpConsumido,pstConcep->stConcTar[pstConcep->iNumConc].dImpConsumido);
+		         /* HASTA AQUI */
+
+	        pstConcep->stConcTar[pstConcep->iNumConc].dImpConsumido  += dImpConsumido                     ;
+
+	        strcpy (pstConcep->stConcTar[pstConcep->iNumConc].szCodPlanTarif, szCodPlanTarif)             ;
+	        strcpy (pstConcep->stConcTar[pstConcep->iNumConc].szCod_Unidad, szCod_Unidad)             	  ;
+	        pstConcep->stConcTar[pstConcep->iNumConc].lhNumUniFree    = lhNumUniFree                      ;
+
+	        pstConcep->stConcTar[pstConcep->iNumConc].iCodTarificacion= iCodTarificacion                  ;
+	        strcpy (pstConcep->stConcTar[pstConcep->iNumConc].szCodServicioOrig, szCodServicioOrig)       ;
+
+	        pstConcep->iNumConc++;
+	    }
+    }
+
+    return(bFound);
+}/************************* Final bfnBuscaAcumCodTarif ***********************/
+
+
+/****************************************************************************
+        TOL functions
+ Descripcion: Funciones cargas del Nuevo Tarificador Online
+ Fecha : 20-12-2002 - 16-01-2003
+ Autor : Mauricio Labra C.
+****************************************************************************/
+
+
+#ifndef isnull
+    #define isnull(name) (name==(char )NULL )
+#endif
+#ifndef strnull
+    #define strnull(name) (name==(char *)NULL || name[0]==(char)NULL)
+#endif
+
+char *ltrim(char *s)
+{
+    char *p=s;
+    if( strnull(s) ) return(NULL);
+    while( *p<=32 && *p>1 ) p++;
+    strcpy(s,p);
+    return(s);
+}
+
+char *rtrim(char *s)
+{
+    char *p=NULL;
+    if( strnull(s) ) return(NULL);
+    p=(s+strlen(s)-1);
+    while( *p<=32 && *p>1 )  p--;
+    *(++p)=0;
+    return(s);
+}
+
+char *alltrim(char *s)
+{
+    return(ltrim(rtrim(s)));
+}
+
+
+int bfnBusca_Promo(char *szTipDcto, char *szCodDcto)
+{
+    int i;
+
+    for( i=0; i<stTOL_DCTO.iNumTolDcto; i++ )
+    {
+        if( !strcmp(szTipDcto,stTOL_DCTO.asTolDcto[i].szTipDcto)
+            && (!strcmp(szCodDcto,stTOL_DCTO.asTolDcto[i].szCodDcto)) )
+        {
+            return(i+1);
+        }
+    }
+    return(FALSE);
+}
+
+
+int bfnBusca_UnidadPromo(char *szUnidad)
+{
+    int i;
+
+    for( i=0; i<stTOL_PROMO.iNumTolPromo; i++ )
+    {
+        if( !strcmp(szUnidad,stTOL_PROMO.asTolPromo[i].szUnidadPromo) )
+        {
+            return(i+1);
+        }
+    }
+    return(FALSE);
+}
+
+
+
+int bfnBusca_Desc(char *szTipDcto)
+{
+    int i;
+
+    for( i=0; i<stTOL_DESC.iNumTolDesc; i++ )
+    {
+        if( !strcmp(szTipDcto,stTOL_DESC.asTolDesc[i].szTipDcto) )
+        {
+            return(i+1);
+        }
+    }
+    return(FALSE);
+}
+
+/* MultiIdioma  */
+BOOL bCarga_TOLDescuentosMI()
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+        static char szAster[4];     EXEC SQL VAR szAster IS STRING(4);
+        static char szNomTabla[17]; EXEC SQL VAR szNomTabla IS STRING(17);
+        static char szNomCampo[9];  EXEC SQL VAR szNomCampo IS STRING(9);
+    EXEC SQL END DECLARE SECTION;
+
+    int j;
+    int iCodProducto;
+    char szCodConcepto[13];
+    char szDesConcepto[256];
+
+
+    strcpy(szAster,"***");
+    strcpy(szNomTabla,"TOL_DESCUENTO_TD");
+    strcpy(szNomCampo,"TIP_DCTO");
+
+    if( strcmp(stCliente.szCodIdioma,pstParamGener.szCodIdioma) )
+    {
+        int  i        = 0   ;
+
+        EXEC SQL DECLARE Cur_TOL_Descuentos_MI CURSOR FOR
+        SELECT  COD_PRODUCTO,
+        COD_CONCEPTO,
+        NVL(DES_CONCEPTO,:szAster)
+        FROM GE_MULTIIDIOMA
+        WHERE NOM_TABLA = :szNomTabla
+        AND NOM_CAMPO = :szNomCampo
+        AND COD_IDIOMA = :stCliente.szCodIdioma
+        ;
+
+        EXEC SQL OPEN Cur_TOL_Descuentos_MI;
+
+        if( SQLCODE )
+        {
+            iDError(szExeName,ERR000,vInsertarIncidencia,"Open->GE_MULTIIDIOMA",szfnORAerror());
+            return(FALSE);
+        }
+
+        i=j=0;
+        while( SQLCODE == 0 )
+        {
+            EXEC SQL FETCH Cur_TOL_Descuentos_MI
+            INTO :iCodProducto,
+            :szCodConcepto,
+            :szDesConcepto
+            ;
+
+            alltrim(szCodConcepto);
+            alltrim(szDesConcepto);
+
+            for( i=0; i<stTOL_DCTO.iNumTolDcto; i++ )
+            {
+                if( stTOL_DCTO.asTolDcto[i].iNTipDcto == iCodProducto
+                    && !strcmp( stTOL_DCTO.asTolDcto[i].szTipDcto,szCodConcepto) )
+                {
+                    strcpy(stTOL_DCTO.asTolDcto[i].szGlsDcto, szDesConcepto);
+                }
+            }
+            stTOL_PROMODCTO_MI.asTolPromoDcto_MI[j].iCodProducto=iCodProducto;
+            strcpy(stTOL_PROMODCTO_MI.asTolPromoDcto_MI[j].szCodConcepto,szCodConcepto);
+            strcpy(stTOL_PROMODCTO_MI.asTolPromoDcto_MI[j].szCodIdioma,stCliente.szCodIdioma);
+            strcpy(stTOL_PROMODCTO_MI.asTolPromoDcto_MI[j].szDesConcepto,szDesConcepto);
+
+            j++;
+        }/* fin while */
+
+        stTOL_PROMODCTO_MI.iNumTolPromoDcto=j-1;
+        vDTrazasLog(szExeName, "\n\t\t*  bCarga_TOLDescuentosMI leidos [%d]\n",LOG05, stTOL_PROMODCTO_MI.iNumTolPromoDcto);
+
+        if( SQLCODE != 0 && SQLCODE != SQLNOTFOUND )
+        {
+            iDError(szExeName,ERR000,vInsertarIncidencia,"Fetch->GE_MULTIIDIOMA", szfnORAerror());
+            return(FALSE);
+        }
+
+        EXEC SQL CLOSE Cur_TOL_Descuentos_MI;
+
+        if( SQLCODE )
+        {
+            iDError(szExeName,ERR000,vInsertarIncidencia,"Close->GE_MULTIIDIOMA", szfnORAerror());
+        }
+    }
+    return(1);
+}
+
+
+#define zero(m) memset(m,0,sizeof(m))
+
+
+/*----------------------------------------------------------------------------*/
+/* Funcion de busqueda en arreglo de ciclos facturados.                       */
+/*----------------------------------------------------------------------------*/
+BOOL bBuscaPlanTarifAbon (long lNumAbonado,char *szCodPlanTarif)
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+    long lhCodCliente ;
+    long lhNumAbonado;
+    char pszFecDesde [15];EXEC SQL VAR pszFecDesde  IS STRING(15);
+    char pszFecHasta [15];EXEC SQL VAR pszFecHasta  IS STRING(15);
+    char pszCodPlanTarif [4];EXEC SQL VAR pszCodPlanTarif  IS STRING(4);
+    static char szFormatoFec [17];EXEC SQL VAR szFormatoFec  IS STRING(17);
+    int   iCero=0;
+    int   iDos=2;
+    EXEC SQL END DECLARE SECTION;
+
+    int i=0;
+
+     strcpy(szFormatoFec,"YYYYMMDDHH24MISS");
+
+	vDTrazasLog ("bBuscaPlanTarifAbon","Plan tarif [%s]", LOG03,szCodPlanTarif);
+
+    while( (lNumAbonado != stCliente.pAbonos[i].lNumAbonado) && (i <= stCliente.iNumAbonos) )
+    {
+        i++;
+    }
+
+
+    if( i > stCliente.iNumAbonos )   /* Periodo no encontrado en arreglo */
+    {
+        vDTrazasLog(szExeName, "Abonado [%d] no encontrado ...", LOG05, lNumAbonado);
+        return(FALSE);
+    }
+    else
+    {
+					strcpy(pszFecDesde,stCiclo.szFecDesdeCFijos);
+					strcpy(pszFecHasta,stCiclo.szFecHastaCFijos);
+					lhCodCliente=stCliente.lCodCliente;
+					lhNumAbonado=lNumAbonado;
+					EXEC SQL
+								SELECT PLANTARIF
+								INTO :pszCodPlanTarif
+								FROM (
+								SELECT A.FEC_DESDE,
+								       A.FEC_HASTA,
+									   A.COD_PLANTARIF PLANTARIF,
+									   B.COD_TIPLAN
+								FROM GA_INTARCEL A, TA_PLANTARIF B
+								WHERE A.COD_CLIENTE   = :lhCodCliente
+								AND A.NUM_ABONADO   = :lhNumAbonado
+								AND A.IND_NUMERO    = :iCero
+								AND B.COD_TIPLAN = :iDos
+								AND B.COD_PLANTARIF = A.COD_PLANTARIF
+								AND A.FEC_DESDE     < TO_DATE (:pszFecHasta, :szFormatoFec)
+								AND A.FEC_HASTA    >= TO_DATE (:pszFecDesde, :szFormatoFec)
+								ORDER BY A.FEC_HASTA DESC)
+								WHERE ROWNUM = 1;
+
+
+		    if( SQLCODE != SQLNOTFOUND && SQLCODE != SQLOK )
+		    {
+		        vDTrazasLog ("bBuscaPlanTarifAbon","\n\t\tError en Select de Plan Tarifario del Cliente/Abonado ==>[%ld/%ld]",LOG03,lhCodCliente,lhNumAbonado);
+		        iDError (szExeName,ERR000,vInsertarIncidencia,"Select de Plan Tarifario del Cliente/Abonado", szfnORAerror());
+		        return(FALSE);
+		    }
+
+		    if( SQLCODE == SQLNOTFOUND )
+		        vDTrazasLog ("bBuscaPlanTarifAbon","\n\t\t* Plan Tarifario del Cliente/Abonado PPQL ",LOG03);
+
+		    if( SQLCODE == SQLOK )
+		        vDTrazasLog ("bBuscaPlanTarifAbon","\n\t\t* Plan Tarifario del Cliente/Abonado [%s]",LOG03,pszCodPlanTarif);
+
+
+
+
+       if (strcmp(pszCodPlanTarif,"")!=0)/* ||strcmp(pszCodPlanTarif," ")!=0)PPQL*/
+       {
+    		   strcpy(szCodPlanTarif,pszCodPlanTarif);
+    		   vDTrazasLog ("bBuscaPlanTarifAbon","Plan tarifPPQL2 [%s]", LOG05,szCodPlanTarif);
+	   }
+	   else
+	  {
+					strcpy(pszFecDesde,stCiclo.szFecDesdeCFijos);
+					strcpy(pszFecHasta,stCiclo.szFecHastaCFijos);
+					lhCodCliente=stCliente.lCodCliente;
+					lhNumAbonado=lNumAbonado;
+					vDTrazasLog ("bBuscaPlanTarifAbon","bBuscaPlanTarifAbon  lhCodCliente [%ld]", LOG03,lhCodCliente);
+					vDTrazasLog ("bBuscaPlanTarifAbon","bBuscaPlanTarifAbon  lhNumAbonado [%ld]", LOG03,lhNumAbonado);
+					vDTrazasLog ("bBuscaPlanTarifAbon","bBuscaPlanTarifAbon  pszFecDesde  [%s]" , LOG03,pszFecDesde);
+					vDTrazasLog ("bBuscaPlanTarifAbon","bBuscaPlanTarifAbon  pszFecHasta  [%s]", LOG03,pszFecHasta);
+
+					EXEC SQL
+					SELECT COD_PLANTARIF
+					  INTO :pszCodPlanTarif
+					  FROM GA_INTARCEL
+		        	 WHERE COD_CLIENTE   = :lhCodCliente
+		        	   AND NUM_ABONADO   = :lhNumAbonado
+		        	   AND IND_NUMERO    = :iCero
+		        	   AND FEC_DESDE     < TO_DATE (:pszFecHasta, :szFormatoFec)
+		        	   AND FEC_HASTA    >= TO_DATE (:pszFecDesde, :szFormatoFec);
+
+								vDTrazasLog ("bBuscaPlanTarifAbon","** pszCodPlanTarif [%s] **", LOG04,pszCodPlanTarif);
+
+					if (SQLCODE) /*(1)*/
+					{
+						EXEC SQL
+						SELECT A.COD_PLANTARIF
+						  INTO :pszCodPlanTarif
+						  FROM GA_INTARCEL A, TA_PLANTARIF B
+			        	 WHERE A.COD_CLIENTE   = :lhCodCliente
+			        	   AND A.NUM_ABONADO   = :lhNumAbonado
+			        	   AND A.IND_NUMERO    = :iCero
+			        	   AND B.cod_tiplan = :iDos AND
+			        	   B.COD_PLANTARIF = A.COD_PLANTARIF
+			        	   AND A.FEC_DESDE     < TO_DATE (:pszFecHasta, :szFormatoFec)
+			        	   AND A.FEC_HASTA    >= TO_DATE (:pszFecDesde, :szFormatoFec)
+			        	   AND ROWNUM < :iDos;
+
+										vDTrazasLog ("bBuscaPlanTarifAbon","DATOS DE (SQLCODE) /*(%d)*/",LOG04,1);
+										vDTrazasLog ("bBuscaPlanTarifAbon","bBuscaPlanTarifAbon 1  lhCodCliente [%ld]", LOG04,lhCodCliente);
+										vDTrazasLog ("bBuscaPlanTarifAbon","bBuscaPlanTarifAbon 1 lhNumAbonado [%ld]", LOG04,lhNumAbonado);
+										vDTrazasLog ("bBuscaPlanTarifAbon","bBuscaPlanTarifAbon 1 pszFecDesde  [%s]" , LOG04,pszFecDesde);
+										vDTrazasLog ("bBuscaPlanTarifAbon","bBuscaPlanTarifAbon 1 pszFecHasta  [%s]", LOG04,pszFecHasta);
+										vDTrazasLog ("bBuscaPlanTarifAbon","bBuscaPlanTarifAbon 1 pszCodPlanTarif [%s]", LOG04,pszCodPlanTarif);
+
+							if (SQLCODE) /*(2)*/
+							{
+
+								EXEC SQL
+								SELECT A.COD_PLANTARIF
+								  INTO :pszCodPlanTarif
+								  FROM GA_INTARCEL A, TA_PLANTARIF B
+					        	 WHERE A.COD_CLIENTE   = :lhCodCliente
+					        	   AND A.NUM_ABONADO   = :lhNumAbonado
+					        	   AND A.IND_NUMERO    = :iCero
+					        	   AND B.COD_PLANTARIF = A.COD_PLANTARIF
+					        	   AND A.FEC_DESDE     < TO_DATE (:pszFecHasta, :szFormatoFec)
+					        	   AND A.FEC_HASTA    >= TO_DATE (:pszFecDesde, :szFormatoFec)
+					        	   AND ROWNUM < :iDos;
+
+						        	  vDTrazasLog ("bBuscaPlanTarifAbon","DATOS DE (SQLCODE) /*(%d)*/",LOG04,2);
+												vDTrazasLog ("bBuscaPlanTarifAbon","bBuscaPlanTarifAbon 2 lhCodCliente [%ld]", LOG04,lhCodCliente);
+												vDTrazasLog ("bBuscaPlanTarifAbon","bBuscaPlanTarifAbon 2 lhNumAbonado [%ld]", LOG04,lhNumAbonado);
+												vDTrazasLog ("bBuscaPlanTarifAbon","bBuscaPlanTarifAbon 2 pszFecDesde  [%s]" , LOG04,pszFecDesde);
+												vDTrazasLog ("bBuscaPlanTarifAbon","bBuscaPlanTarifAbon 2 pszFecHasta  [%s]", LOG04,pszFecHasta);
+												vDTrazasLog ("bBuscaPlanTarifAbon","pszCodPlanTarif [%s]", LOG04,pszCodPlanTarif);
+
+												if (SQLCODE) /*(3)*/
+												{
+												  EXEC SQL
+												  SELECT A.COD_PLANTARIF
+														INTO :pszCodPlanTarif
+												  FROM GA_INTARCEL A
+									          	 WHERE A.COD_CLIENTE   = :lhCodCliente
+									        	   AND A.NUM_ABONADO   = :lhNumAbonado
+									        	   AND A.IND_NUMERO    = :iCero
+									        	   AND A.FEC_DESDE      = ( select max(B.fec_desde)
+									                                FROM GA_INTARCEL B
+									                           	 WHERE B.COD_CLIENTE   = :lhCodCliente
+									                           	   AND B.NUM_ABONADO   = :lhNumAbonado
+									                          	   AND B.IND_NUMERO    = :iCero);
+
+									        	  vDTrazasLog ("bBuscaPlanTarifAbon","DATOS DE (SQLCODE) /*(%d)*/",LOG04,3);
+															vDTrazasLog ("bBuscaPlanTarifAbon","bBuscaPlanTarifAbon 3 lhCodCliente [%ld]", LOG04,lhCodCliente);
+															vDTrazasLog ("bBuscaPlanTarifAbon","bBuscaPlanTarifAbon 3 lhNumAbonado [%ld]", LOG04,lhNumAbonado);
+															vDTrazasLog ("bBuscaPlanTarifAbon","bBuscaPlanTarifAbon 3 pszFecDesde  [%s]" , LOG04,pszFecDesde);
+															vDTrazasLog ("bBuscaPlanTarifAbon","bBuscaPlanTarifAbon 3 pszFecHasta  [%s]", LOG04,pszFecHasta);
+															vDTrazasLog ("bBuscaPlanTarifAbon","bBuscaPlanTarifAbon [%s]", LOG04,pszCodPlanTarif);
+
+														if (SQLCODE)
+														{
+															vDTrazasLog ("bBuscaPlanTarifAbon","Error lhNumAbonado [%ld]", LOG01,lhNumAbonado);
+															return (FALSE);
+														}
+												}
+			        }
+		      }
+				vDTrazasLog ("bBuscaPlanTarifAbon","Plan tarif1 [%s]", LOG05,pszCodPlanTarif);
+				strcpy(szCodPlanTarif,pszCodPlanTarif);
+				vDTrazasLog ("bBuscaPlanTarifAbon","Plan tarif2 [%s]", LOG05,szCodPlanTarif);
+		 }
+    }
+
+    return(1);
+}
+
+BOOL bGetCodServGenerico(char *szCodServicio)
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+    char szhCodServicio [21];EXEC SQL VAR szhCodServicio  IS STRING(21);
+    char szhNomParametro[21];EXEC SQL VAR szhNomParametro IS STRING(21);
+    char szhCodModulo	[3] ;EXEC SQL VAR szhCodModulo    IS STRING(3);
+    EXEC SQL END DECLARE SECTION;
+	int iRes=0;
+
+	vDTrazasLog(szExeName, "rao gszCodServicioGene [%s]", LOG05, gszCodServicioGene);
+
+	if (bIndCodServicioGene == 0)
+	{
+		strcpy(szhNomParametro,"TIPO_PLAN_SERVICIO");
+		strcpy(szhCodModulo	  ,"TA");
+
+		EXEC SQL
+			SELECT COD_SERVICIO
+			  INTO :szhCodServicio
+			  FROM GAD_SERVSUP_PLAN
+			 WHERE COD_PLANTARIF IN
+					(SELECT VAL_PARAMETRO
+					   FROM GED_PARAMETROS
+					  WHERE COD_MODULO    = :szhCodModulo
+						AND NOM_PARAMETRO = :szhNomParametro);
+
+		if (SQLCODE)
+		{
+			strcpy (szCodServicio,szhCodServicio);
+			strcpy (gszCodServicioGene,szhCodServicio);
+			bIndCodServicioGene=1;
+		}
+		iRes=SQLCODE;
+	}
+	else
+		strcpy (szCodServicio,gszCodServicioGene);
+
+	return(iRes);
+}
+
+BOOL bLiberaEstrConc(CONCEP *stConcep)
+{
+	int i;
+
+	for( i=0;i<stConcep->iNumConc;i++ )
+		memset (&stConcep->stConcTar[i], 0, sizeof (CONCTAR));
+
+	return (1);
+
+}
+
+/******************************************************************************************/
+/** Informacin de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisin                                            : */
+/**  %PR% */
+/** Autor de la Revisin                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisin ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creacin de la Revisin                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+
