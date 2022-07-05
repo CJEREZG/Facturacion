@@ -15,28 +15,7 @@ Autor      :  Javier Garcia Paredes
 /*****************************************************************************/
 /* Versionamiento 															 */
 /*****************************************************************************/
-/* RAO20030628: Se inicia el versionamiento con la incidencia TM-260620030157*/
-/*#define szVersionActual        "1.12"  CJG XXXXX 25-06-2007 */
-/*#define szUltimaModificacion "08.07.2007" CJG XXXXX 25-06-2007 */
-/* #define szVersionActual        "1.14" */ /*CJG 42136 30-07-2007 */
-/* #define szVersionActual        "1.15" */ /*PGG 42917 3-08-2007 */
-/*#define szVersionActual        "1.17"  PGG 42970 7-08-2007 */
-/*#define szUltimaModificacion "08.08.2007" PGG 42970 07-08-2007 */
-/*#define szVersionActual        "1.18" */ /* MA-64457 */
-/*#define szUltimaModificacion "12.05.2008" */ /* MA-64457 */
-/* #define szUltimaModificacion "30.07.2007" */ /*CJG 42136 30-07-2007 */
-/*#define szVersionActual       "1.19" */ 			/* PGG SOPORTE - 70685 - 23-09-2008 */
-/*#define szUltimaModificacion 	"23.09.2008" */ 	/* PGG SOPORTE - 70685 - 23-09-2008 */
-/*#define szVersionActual       "1.20"                    PGG SOPORTE - 71849 - 17-10-2008 */
-/*#define szUltimaModificacion    "17.10.2008"     PGG SOPORTE - 71849 - 17-10-2008 */
-/*#define szVersionActual       "1.21"                     CJG 73156 
-#define szUltimaModificacion    "20.11.2008"     CJG 73156 */
 
-/*#define szVersionActual         "1.22"        AFGS 73505 
-#define szUltimaModificacion    "26.11.2008"  AFGS 73505 */
-
-/*#define szVersionActual         "1.23"        AFGS 79605
-#define szUltimaModificacion    "02.03.2009" AFGS 79605*/
 #define szVersionActual         "1.25"        /*PPQL 79840*/
 #define szUltimaModificacion    "09.03.2009" /*PPQL 79840*/
 /*****************************************************************************/
@@ -148,7 +127,7 @@ access CONFIG stConfig;
 
 
 /******************************************************************************************/
-/** Informaci髇 de Versionado *************************************************************/
+/** Informaci贸n de Versionado *************************************************************/
 /******************************************************************************************/
 /** Pieza                                               : */
 /**  %ARCHIVE% */
@@ -156,13 +135,13 @@ access CONFIG stConfig;
 /**  %PID% */
 /** Producto                                            : */
 /**  %PP% */
-/** Revisi髇                                            : */
+/** Revisi贸n                                            : */
 /**  %PR% */
-/** Autor de la Revisi髇                                : */
+/** Autor de la Revisi贸n                                : */
 /**  %AUTHOR% */
-/** Estado de la Revisi髇 ($TO_BE_DEFINED es Check-Out) : */
+/** Estado de la Revisi贸n ($TO_BE_DEFINED es Check-Out) : */
 /**  %PS% */
-/** Fecha de Creaci髇 de la Revisi髇                    : */
+/** Fecha de Creaci贸n de la Revisi贸n                    : */
 /**  %DATE% */
 /** Worksets ******************************************************************************/
 /** %PIRW% */
